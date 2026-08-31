@@ -1,5 +1,3 @@
-# Hi, I'm Fong
-
 **Data engineering / data science — I build reproducible, auditable pipelines where every published number can be traced back to its source.**
 
 Based in Christchurch, New Zealand. My projects sit at the intersection of data quality, analytics engineering, machine learning and practical delivery.
