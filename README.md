@@ -6,7 +6,7 @@ Based in Christchurch, New Zealand. My projects sit at the intersection of data 
 
 | Project | What stands out |
 |---|---|
-| [**retail-ai-pipeline**](https://github.com/Kenchch/retail-ai-pipeline) | End-to-end Airflow + dbt retail pipeline with atomic versioned publishing; **62 Python tests**, **£10.25M reconciled** across 19,773 orders, and 522,566 loaded rows + 19,343 quarantined rows accounted for exactly. |
+| [**retail-ai-pipeline**](https://github.com/Kenchch/retail-ai-pipeline) | End-to-end Airflow + dbt retail pipeline with atomic versioned publishing; **66 Python tests**, **£10.25M reconciled** across 19,773 orders, and 522,566 loaded rows + 19,343 quarantined rows accounted for exactly. |
 | [**aerial-small-object-detection**](https://github.com/Kenchch/aerial-small-object-detection) | YOLO11 small-object detection and tracking on VisDrone2019; **130 tests**, Dockerized GPU workflow, ONNX export and measured accuracy/latency benchmarks over **38,759 validation boxes**. |
 | [**nz-attraction-pageviews**](https://github.com/Kenchch/nz-attraction-pageviews) | Incremental Wikimedia API ingestion into DuckDB with idempotent recovery and data-quality checks; **187 offline tests** across Python 3.10–3.13. |
 | [**onlineretailanalysisr**](https://github.com/Kenchch/onlineretailanalysisr) | Reproducible R + SQL analysis of **541,909 invoice lines**; cancellation-aware netting produces **£9.88M** in clean sales, backed by a SHA-256-pinned input and reconciliation audit. |
