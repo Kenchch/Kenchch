@@ -1,6 +1,6 @@
-**Data engineering / data science — I build reproducible, auditable pipelines where every published number can be traced back to its source.**
+**I build reliable, reproducible data and machine-learning projects where results can be traced back to their source.**
 
-Based in Christchurch, New Zealand. My projects sit at the intersection of data quality, analytics engineering, machine learning and practical delivery.
+Based in Christchurch, New Zealand. This portfolio covers data pipelines, analytics, distributed processing and applied machine learning, with an emphasis on data quality and practical delivery.
 
 ## Selected work
 
