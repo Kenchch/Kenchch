@@ -1,4 +1,8 @@
-**I build reliable, reproducible data and machine-learning projects where results can be traced back to their source.**
+## Feng Jiang
+
+**Data engineer in Christchurch, New Zealand. I build pipelines whose numbers can be audited.**
+
+Open to data and analytics engineering roles in New Zealand.
 
 Based in Christchurch, New Zealand. This portfolio covers data pipelines, analytics, distributed processing and applied machine learning, with an emphasis on data quality and practical delivery.
 
@@ -6,18 +10,34 @@ Based in Christchurch, New Zealand. This portfolio covers data pipelines, analyt
 
 | Project | What stands out |
 |---|---|
-| [**retail-ai-pipeline**](https://github.com/Kenchch/retail-ai-pipeline) | End-to-end Airflow + dbt retail pipeline with atomic versioned publishing; **66 Python tests**, **£10.25M reconciled** across 19,773 orders, and 522,566 loaded rows + 19,343 quarantined rows accounted for exactly. |
-| [**aerial-small-object-detection**](https://github.com/Kenchch/aerial-small-object-detection) | YOLO11 small-object detection and tracking on VisDrone2019; **130 tests**, Dockerized GPU workflow, ONNX export and measured accuracy/latency benchmarks over **38,759 validation boxes**. |
-| [**nz-attraction-pageviews**](https://github.com/Kenchch/nz-attraction-pageviews) | Incremental Wikimedia API ingestion into DuckDB with idempotent recovery and data-quality checks; **187 offline tests** across Python 3.10–3.13. |
+| [**retail-ai-pipeline**](https://github.com/Kenchch/retail-ai-pipeline) | End-to-end Airflow + dbt retail pipeline with atomic versioned publishing; **£10.25M gross valid sales** across 19,773 orders, with 522,566 loaded rows + 19,343 quarantined rows accounted for exactly. |
+| [**aerial-small-object-detection**](https://github.com/Kenchch/aerial-small-object-detection) | YOLO11 small-object detection and tracking on VisDrone2019; Dockerized GPU workflow, ONNX export and measured accuracy/latency benchmarks over **38,759 validation boxes**. |
+| [**nz-attraction-pageviews**](https://github.com/Kenchch/nz-attraction-pageviews) | Incremental Wikimedia API ingestion into DuckDB with idempotent recovery, offline validation and data-quality checks across Python 3.10–3.13. |
 | [**online-retail-analysis-r**](https://github.com/Kenchch/online-retail-analysis-r) | Reproducible R + SQL analysis of **541,909 invoice lines**; cancellation-aware netting produces **£9.88M** in clean sales, backed by a SHA-256-pinned input and reconciliation audit. |
-| [**Million-Song-Dataset-Analysis-with-Spark**](https://github.com/Kenchch/Million-Song-Dataset-Analysis-with-Spark) | PySpark ML over **48.4M listening events** and **12.2 GB of audio features**; genre classification plus implicit-feedback ALS recommendations, with sanitized source notebooks and CI. |
-| [**GHCN-Daily-Climate-Analysis-with-PySpark**](https://github.com/Kenchch/GHCN-Daily-Climate-Analysis-with-PySpark) | Distributed climate-data engineering for the **13+ GB GHCN-Daily archive**; fixed-width station enrichment, New Zealand temperature trends and global precipitation outputs. |
+
+The two retail projects use the same UCI input but answer different accounting
+questions. The Python pipeline reports valid positive sales before matching
+credit notes; the R analysis nets matched sale/cancellation pairs and retains
+exact duplicate rows. Their £370k difference is reconciled in both project
+READMEs.
 
 ## How I work
 
 - **Reproducibility:** pinned or fingerprinted inputs, one-command rebuilds and committed evidence.
 - **Auditability:** explicit quality gates, row-level reconciliation and immutable/atomic publication.
 - **Engineering discipline:** CI, automated tests, documented limitations and measured—not assumed—performance.
+
+## How this portfolio was built
+
+I used AI pair-programming tools, including Claude Code and OpenAI Codex, for
+drafting, refactoring and test scaffolding. I defined the problems, designed
+the pipelines and data contracts, selected the quality rules, ran the
+benchmarks on my own hardware, and reviewed and edited the resulting code.
+Commits with assistant-contributed code retain their `Co-Authored-By` trailers.
+
+## Contact
+
+Please contact me through [my GitHub profile](https://github.com/Kenchch).
 
 ## Stack
 
@@ -26,5 +46,3 @@ Based in Christchurch, New Zealand. This portfolio covers data pipelines, analyt
 [![retail-ai-pipeline CI](https://github.com/Kenchch/retail-ai-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/Kenchch/retail-ai-pipeline/actions/workflows/ci.yml)
 [![aerial detection CI](https://github.com/Kenchch/aerial-small-object-detection/actions/workflows/ci.yml/badge.svg)](https://github.com/Kenchch/aerial-small-object-detection/actions/workflows/ci.yml)
 [![NZ pageviews CI](https://github.com/Kenchch/nz-attraction-pageviews/actions/workflows/ci.yml/badge.svg)](https://github.com/Kenchch/nz-attraction-pageviews/actions/workflows/ci.yml)
-[![Million Song CI](https://github.com/Kenchch/Million-Song-Dataset-Analysis-with-Spark/actions/workflows/ci.yml/badge.svg)](https://github.com/Kenchch/Million-Song-Dataset-Analysis-with-Spark/actions/workflows/ci.yml)
-[![GHCN Daily CI](https://github.com/Kenchch/GHCN-Daily-Climate-Analysis-with-PySpark/actions/workflows/ci.yml/badge.svg)](https://github.com/Kenchch/GHCN-Daily-Climate-Analysis-with-PySpark/actions/workflows/ci.yml)
