@@ -28,7 +28,7 @@ measured customer impact.
 The two retail projects use the same UCI input but answer different accounting
 questions. The Python pipeline reports valid positive sales before matching
 credit notes; the R analysis nets matched sale/cancellation pairs and retains
-exact duplicate rows. Their £370k difference is reconciled in both project
+exact duplicate rows. Their approximately £364k difference is reconciled in both project
 READMEs.
 
 ## How I work
