@@ -4,7 +4,17 @@
 
 Open to data and analytics engineering roles in New Zealand.
 
-Based in Christchurch, New Zealand. This portfolio covers data pipelines, analytics, distributed processing and applied machine learning, with an emphasis on data quality and practical delivery.
+My portfolio focuses on Python and SQL pipelines, data quality, and analytics delivery, with additional projects in distributed processing and applied machine learning.
+
+## Start here
+
+- **Data engineering:** [retail pipeline](https://github.com/Kenchch/retail-ai-pipeline) for orchestration, dbt and publication guarantees; [NZ pageviews](https://github.com/Kenchch/nz-attraction-pageviews#run-it) for a small offline demo of incremental ingestion and recovery.
+- **Analytics:** [retail analysis](https://github.com/Kenchch/online-retail-analysis-r/blob/main/analysis.md) for SQL, credit-note reconciliation and business findings; [NZ sheep analysis](https://kenchch.github.io/nz-sheep-decline-by-region/) for a published report with source-data checks and uncertainty.
+- **Applied ML:** [drone detection](https://github.com/Kenchch/aerial-small-object-detection) for measured accuracy and inference latency.
+
+These are portfolio and study projects. Dataset totals and offline benchmarks
+describe the analysed inputs and experiments, rather than revenue generated or
+measured customer impact.
 
 ## Selected work
 
@@ -34,10 +44,6 @@ drafting, refactoring and test scaffolding. I defined the problems, designed
 the pipelines and data contracts, selected the quality rules, ran the
 benchmarks on my own hardware, and reviewed and edited the resulting code.
 Commits with assistant-contributed code retain their `Co-Authored-By` trailers.
-
-## Contact
-
-Please contact me through [my GitHub profile](https://github.com/Kenchch).
 
 ## Stack
 
