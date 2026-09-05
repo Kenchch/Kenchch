@@ -1,65 +1,37 @@
 ## Feng Jiang
 
-**Data engineer in Christchurch, New Zealand. I build pipelines whose numbers can be audited.**
+I build data pipelines and analyses that make it possible to trace a result back to its source.
 
-Open to data and analytics engineering roles in New Zealand.
+Based in **Christchurch, New Zealand**, and open to **data and analytics engineering roles**. [Email me](mailto:janfinq@gmail.com).
 
-My portfolio focuses on Python and SQL pipelines, data quality, and analytics delivery, with additional projects in distributed processing and applied machine learning.
+## Explore my work
 
-## Start here
+The links below lead to reports, demonstrations and source code. You can read the results without installing anything.
 
-- **Data engineering:** [retail pipeline](https://github.com/Kenchch/retail-ai-pipeline) for orchestration, dbt and publication guarantees; [NZ pageviews](https://github.com/Kenchch/nz-attraction-pageviews#run-it) for a small offline demo of incremental ingestion and recovery.
-- **Analytics:** [retail analysis](https://github.com/Kenchch/online-retail-analysis-r/blob/main/analysis.md) for SQL, credit-note reconciliation and business findings; [NZ sheep analysis](https://kenchch.github.io/nz-sheep-decline-by-region/) for a published report with source-data checks and uncertainty.
-- **Distributed processing:** [Million Song](https://github.com/Kenchch/Million-Song-Dataset-Analysis-with-Spark) for PySpark ALS over 48.4M listening events; [GHCN-Daily](https://github.com/Kenchch/GHCN-Daily-Climate-Analysis-with-PySpark) for Spark workflows over a 13+ GB climate archive.
-- **Applied ML:** [drone detection](https://github.com/Kenchch/aerial-small-object-detection) for measured accuracy and inference latency.
+| Project | The question or problem | Start with |
+|---|---|---|
+| **Retail data pipeline** | How can sales data be checked and published reliably, even when a run fails? | [Pipeline and Power BI preview](https://github.com/Kenchch/retail-ai-pipeline) |
+| **NZ attraction pageviews** | How can a daily data import recover from missing API responses without losing records? | [Small offline demo](https://github.com/Kenchch/nz-attraction-pageviews#run-it) |
+| **Online retail analysis** | How do cancellations change the picture of sales and repeat customers? | [Analysis with charts](https://github.com/Kenchch/online-retail-analysis-r/blob/main/analysis.md) |
+| **NZ sheep decline** | Which regions account for the decline, and what can the published statistics tell us? | [Read the published report](https://kenchch.github.io/nz-sheep-decline-by-region/) |
+| **Drone object detection** | How does image resolution affect the detection of tiny objects and inference speed? | [Watch the demo and inspect results](https://github.com/Kenchch/aerial-small-object-detection) |
+| **Million Song** | How can Spark support music classification and recommendations across millions of listening events? | [Pipelines and recorded study results](https://github.com/Kenchch/Million-Song-Dataset-Analysis-with-Spark) |
+| **GHCN-Daily climate analysis** | How can a large weather archive become station and country summaries? | [Spark workflows and example charts](https://github.com/Kenchch/GHCN-Daily-Climate-Analysis-with-PySpark) |
 
-These are portfolio and study projects. Dataset totals and offline benchmarks
-describe the analysed inputs and experiments, rather than revenue generated or
-measured customer impact.
+For **data engineering**, start with the retail pipeline and NZ pageviews. For a **visual analysis**, start with the NZ sheep report.
 
-## Selected work
+## What the results mean
 
-| Project | What stands out |
-|---|---|
-| [**retail-ai-pipeline**](https://github.com/Kenchch/retail-ai-pipeline) | End-to-end Airflow + dbt retail pipeline with atomic versioned publishing; **£10.25M gross valid sales** across 19,773 orders, with 522,566 loaded rows + 19,343 quarantined rows accounted for exactly. |
-| [**aerial-small-object-detection**](https://github.com/Kenchch/aerial-small-object-detection) | YOLO11 small-object detection and tracking on VisDrone2019; Dockerized GPU workflow, ONNX export and measured accuracy/latency benchmarks over **38,759 validation boxes**. |
-| [**nz-attraction-pageviews**](https://github.com/Kenchch/nz-attraction-pageviews) | Incremental Wikimedia API ingestion into DuckDB with idempotent recovery, offline validation and data-quality checks across Python 3.10–3.13. |
-| [**online-retail-analysis-r**](https://github.com/Kenchch/online-retail-analysis-r) | Reproducible R + SQL analysis of **541,909 invoice lines**; cancellation-aware netting produces **£9.88M** in clean sales, backed by a SHA-256-pinned input and reconciliation audit. |
-| [**nz-sheep-decline-by-region**](https://github.com/Kenchch/nz-sheep-decline-by-region) | A [published report](https://kenchch.github.io/nz-sheep-decline-by-region/) on a **16.32M head** decline, rendered by CI from a SHA-256-pinned Stats NZ extract. Quality rules are validated by running them against a deliberately corrupted copy, so an all-green table proves the rules can fire; suppressed cells stay suppressed rather than becoming zero. |
-| [**Million-Song-Dataset-Analysis-with-Spark**](https://github.com/Kenchch/Million-Song-Dataset-Analysis-with-Spark) | PySpark over **48.4M** listening events: audio-feature genre models and implicit-feedback ALS on 33.2M training interactions, with ranking metrics tested independently of Spark. |
-| [**GHCN-Daily-Climate-Analysis-with-PySpark**](https://github.com/Kenchch/GHCN-Daily-Climate-Analysis-with-PySpark) | Distributed workflows over the **13+ GB** NOAA GHCN-Daily archive: fixed-width metadata parsed at its published offsets, station enrichment that holds its grain, and a Spark SQL Haversine instead of a Python UDF. |
+These are portfolio and study projects. Sales totals describe historical datasets, and model scores describe experiments; they are not revenue I generated or measured customer impact. The retail pipeline's adoption telemetry is simulated.
 
-The two retail projects use the same UCI input but answer different accounting
-questions. The Python pipeline reports valid positive sales before matching
-credit notes; the R analysis nets matched sale/cancellation pairs and retains
-exact duplicate rows. Their approximately £364k difference is reconciled in both project
-READMEs.
+The two retail projects use the same source data with different cleaning and cancellation rules. Their READMEs explain and reconcile the different sales totals. Each project documents its own reproduction steps, tests and limitations.
 
-## How I work
+## Tools and approach
 
-- **Reproducibility:** pinned or fingerprinted inputs, one-command rebuilds and committed evidence.
-- **Auditability:** explicit quality gates, row-level reconciliation and immutable/atomic publication.
-- **Engineering discipline:** CI, automated tests, documented limitations and measured—not assumed—performance.
+My core tools are **Python, SQL and R**, with Spark for distributed processing, Airflow and dbt for pipelines, Power BI for reporting, and PyTorch/ONNX for applied ML.
+
+I focus on source-data checks, recoverable workflows, automated tests and evidence that a reader can inspect.
 
 ## How this portfolio was built
 
-I used AI pair-programming tools, including Claude Code and OpenAI Codex, for
-drafting, refactoring and test scaffolding. I defined the problems, designed
-the pipelines and data contracts, selected the quality rules, ran the
-benchmarks on my own hardware, and reviewed and edited the resulting code.
-Commits with assistant-contributed code retain their `Co-Authored-By` trailers.
-
-## Contact
-
-Christchurch, New Zealand — open to data and analytics engineering roles.
-
-- **Email:** [janfinq@gmail.com](mailto:janfinq@gmail.com)
-
-## Stack
-
-`Python` · `SQL` · `R` · `Airflow` · `dbt` · `DuckDB` · `pandas` · `PySpark` · `Docker` · `Power BI` · `PyTorch` · `ONNX`
-
-[![retail-ai-pipeline CI](https://github.com/Kenchch/retail-ai-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/Kenchch/retail-ai-pipeline/actions/workflows/ci.yml)
-[![aerial detection CI](https://github.com/Kenchch/aerial-small-object-detection/actions/workflows/ci.yml/badge.svg)](https://github.com/Kenchch/aerial-small-object-detection/actions/workflows/ci.yml)
-[![NZ pageviews CI](https://github.com/Kenchch/nz-attraction-pageviews/actions/workflows/ci.yml/badge.svg)](https://github.com/Kenchch/nz-attraction-pageviews/actions/workflows/ci.yml)
-[![NZ sheep reproduce](https://github.com/Kenchch/nz-sheep-decline-by-region/actions/workflows/reproduce.yml/badge.svg)](https://github.com/Kenchch/nz-sheep-decline-by-region/actions/workflows/reproduce.yml)
+I used AI pair-programming tools, including Claude Code and OpenAI Codex, for drafting, refactoring and test scaffolding. I defined the problems, designed the pipelines and data contracts, selected the quality rules, ran the benchmarks on my own hardware, and reviewed and edited the resulting code. Commits with assistant-contributed code retain their `Co-Authored-By` trailers.
