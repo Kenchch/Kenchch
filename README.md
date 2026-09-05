@@ -29,6 +29,3 @@ These are portfolio and study projects, not evidence of production deployment or
 
 The two retail projects use the same UCI source but different acceptance and cancellation rules. Their READMEs reconcile gross positive sales with the R analysis's matched-cancellation result; partial and unmatched returns remain outside that netting method.
 
-## How this portfolio was built
-
-I used AI pair-programming tools, including Claude Code and OpenAI Codex, for drafting, refactoring and test scaffolding. I defined the problems, designed the pipelines and data contracts, selected the quality rules, ran the benchmarks on my own hardware, and reviewed and edited the resulting code. Commits with assistant-contributed code retain their `Co-Authored-By` trailers.
