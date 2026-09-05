@@ -10,6 +10,7 @@ My portfolio focuses on Python and SQL pipelines, data quality, and analytics de
 
 - **Data engineering:** [retail pipeline](https://github.com/Kenchch/retail-ai-pipeline) for orchestration, dbt and publication guarantees; [NZ pageviews](https://github.com/Kenchch/nz-attraction-pageviews#run-it) for a small offline demo of incremental ingestion and recovery.
 - **Analytics:** [retail analysis](https://github.com/Kenchch/online-retail-analysis-r/blob/main/analysis.md) for SQL, credit-note reconciliation and business findings; [NZ sheep analysis](https://kenchch.github.io/nz-sheep-decline-by-region/) for a published report with source-data checks and uncertainty.
+- **Distributed processing:** [Million Song](https://github.com/Kenchch/Million-Song-Dataset-Analysis-with-Spark) for PySpark ALS over 48.4M listening events; [GHCN-Daily](https://github.com/Kenchch/GHCN-Daily-Climate-Analysis-with-PySpark) for Spark workflows over a 13+ GB climate archive.
 - **Applied ML:** [drone detection](https://github.com/Kenchch/aerial-small-object-detection) for measured accuracy and inference latency.
 
 These are portfolio and study projects. Dataset totals and offline benchmarks
@@ -24,6 +25,9 @@ measured customer impact.
 | [**aerial-small-object-detection**](https://github.com/Kenchch/aerial-small-object-detection) | YOLO11 small-object detection and tracking on VisDrone2019; Dockerized GPU workflow, ONNX export and measured accuracy/latency benchmarks over **38,759 validation boxes**. |
 | [**nz-attraction-pageviews**](https://github.com/Kenchch/nz-attraction-pageviews) | Incremental Wikimedia API ingestion into DuckDB with idempotent recovery, offline validation and data-quality checks across Python 3.10–3.13. |
 | [**online-retail-analysis-r**](https://github.com/Kenchch/online-retail-analysis-r) | Reproducible R + SQL analysis of **541,909 invoice lines**; cancellation-aware netting produces **£9.88M** in clean sales, backed by a SHA-256-pinned input and reconciliation audit. |
+| [**nz-sheep-decline-by-region**](https://github.com/Kenchch/nz-sheep-decline-by-region) | A [published report](https://kenchch.github.io/nz-sheep-decline-by-region/) on a **16.32M head** decline, rendered by CI from a SHA-256-pinned Stats NZ extract. Quality rules are validated by running them against a deliberately corrupted copy, so an all-green table proves the rules can fire; suppressed cells stay suppressed rather than becoming zero. |
+| [**Million-Song-Dataset-Analysis-with-Spark**](https://github.com/Kenchch/Million-Song-Dataset-Analysis-with-Spark) | PySpark over **48.4M** listening events: audio-feature genre models and implicit-feedback ALS on 33.2M training interactions, with ranking metrics tested independently of Spark. |
+| [**GHCN-Daily-Climate-Analysis-with-PySpark**](https://github.com/Kenchch/GHCN-Daily-Climate-Analysis-with-PySpark) | Distributed workflows over the **13+ GB** NOAA GHCN-Daily archive: fixed-width metadata parsed at its published offsets, station enrichment that holds its grain, and a Spark SQL Haversine instead of a Python UDF. |
 
 The two retail projects use the same UCI input but answer different accounting
 questions. The Python pipeline reports valid positive sales before matching
@@ -45,6 +49,12 @@ the pipelines and data contracts, selected the quality rules, ran the
 benchmarks on my own hardware, and reviewed and edited the resulting code.
 Commits with assistant-contributed code retain their `Co-Authored-By` trailers.
 
+## Contact
+
+Christchurch, New Zealand — open to data and analytics engineering roles.
+
+- **Email:** [janfinq@gmail.com](mailto:janfinq@gmail.com)
+
 ## Stack
 
 `Python` · `SQL` · `R` · `Airflow` · `dbt` · `DuckDB` · `pandas` · `PySpark` · `Docker` · `Power BI` · `PyTorch` · `ONNX`
@@ -52,3 +62,4 @@ Commits with assistant-contributed code retain their `Co-Authored-By` trailers.
 [![retail-ai-pipeline CI](https://github.com/Kenchch/retail-ai-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/Kenchch/retail-ai-pipeline/actions/workflows/ci.yml)
 [![aerial detection CI](https://github.com/Kenchch/aerial-small-object-detection/actions/workflows/ci.yml/badge.svg)](https://github.com/Kenchch/aerial-small-object-detection/actions/workflows/ci.yml)
 [![NZ pageviews CI](https://github.com/Kenchch/nz-attraction-pageviews/actions/workflows/ci.yml/badge.svg)](https://github.com/Kenchch/nz-attraction-pageviews/actions/workflows/ci.yml)
+[![NZ sheep reproduce](https://github.com/Kenchch/nz-sheep-decline-by-region/actions/workflows/reproduce.yml/badge.svg)](https://github.com/Kenchch/nz-sheep-decline-by-region/actions/workflows/reproduce.yml)
