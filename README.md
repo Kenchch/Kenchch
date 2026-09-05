@@ -1,36 +1,33 @@
 ## Feng Jiang
 
-I build data pipelines and analyses that make it possible to trace a result back to its source.
+**Data and analytics engineering — Python, SQL, Spark, Airflow and dbt.**
 
-Based in **Christchurch, New Zealand**, and open to **data and analytics engineering roles**. [Email me](mailto:janfinq@gmail.com).
+Based in Christchurch, New Zealand, and open to data and analytics engineering roles. [Contact](mailto:janfinq@gmail.com).
 
-## Explore my work
+I build pipelines with explicit data contracts, recoverable publication and reconciled outputs. This portfolio also covers statistical analysis and measured ML deployment trade-offs.
 
-The links below lead to reports, demonstrations and source code. You can read the results without installing anything.
+## Selected engineering work
 
-| Project | The question or problem | Start with |
+| Project | Implementation and evidence | Scope and trade-offs |
 |---|---|---|
-| **Retail data pipeline** | How can sales data be checked and published reliably, even when a run fails? | [Pipeline and Power BI preview](https://github.com/Kenchch/retail-ai-pipeline) |
-| **NZ attraction pageviews** | How can a daily data import recover from missing API responses without losing records? | [Small offline demo](https://github.com/Kenchch/nz-attraction-pageviews#run-it) |
-| **Online retail analysis** | How do cancellations change the picture of sales and repeat customers? | [Analysis with charts](https://github.com/Kenchch/online-retail-analysis-r/blob/main/analysis.md) |
-| **NZ sheep decline** | Which regions account for the decline, and what can the published statistics tell us? | [Read the published report](https://kenchch.github.io/nz-sheep-decline-by-region/) |
-| **Drone object detection** | How does image resolution affect the detection of tiny objects and inference speed? | [Watch the demo and inspect results](https://github.com/Kenchch/aerial-small-object-detection) |
-| **Million Song** | How can Spark support music classification and recommendations across millions of listening events? | [Pipelines and recorded study results](https://github.com/Kenchch/Million-Song-Dataset-Analysis-with-Spark) |
-| **GHCN-Daily climate analysis** | How can a large weather archive become station and country summaries? | [Spark workflows and example charts](https://github.com/Kenchch/GHCN-Daily-Climate-Analysis-with-PySpark) |
+| [**retail-ai-pipeline**](https://github.com/Kenchch/retail-ai-pipeline) | Airflow orchestration, versioned publication through an atomic manifest, a contracted dbt/DuckDB mart and a Power BI semantic model. **522,566 loaded + 19,343 quarantined = 541,909 input rows**. | Single-machine storage and execution. Warehouse and downstream mart promotion are separate boundaries; adoption telemetry is simulated. |
+| [**nz-attraction-pageviews**](https://github.com/Kenchch/nz-attraction-pageviews) | Incremental Wikimedia ingestion into DuckDB: retries, quarantine, watermark recovery and an [offline demo](https://github.com/Kenchch/nz-attraction-pageviews#run-it). | Handles ambiguous missing responses and publication lag; pageviews measure online attention, not attendance. See [limits](https://github.com/Kenchch/nz-attraction-pageviews#limits). |
+| [**aerial-small-object-detection**](https://github.com/Kenchch/aerial-small-object-detection) | YOLO11n on VisDrone2019, ONNX export and accuracy parity checks, CUDA placement verification, and separate core/transfer-inclusive latency measurements. | Validation-based checkpoint selection and a limited training budget. Synthetic-motion tracking demo demonstrates the pipeline, not tracking accuracy on moving objects. |
 
-For **data engineering**, start with the retail pipeline and NZ pageviews. For a **visual analysis**, start with the NZ sheep report.
+## Analysis and distributed processing
 
-## What the results mean
+| Project | Technical focus | Evidence |
+|---|---|---|
+| [**online-retail-analysis-r**](https://github.com/Kenchch/online-retail-analysis-r) | R/SQLite analysis with chronological, one-to-one credit matching, SHA-256 input verification and checks against committed summary tables. | [Rendered analysis](https://github.com/Kenchch/online-retail-analysis-r/blob/main/analysis.md), including the published correction and exact-match limitations. |
+| [**nz-sheep-decline-by-region**](https://github.com/Kenchch/nz-sheep-decline-by-region) | Stats NZ source reconciliation, suppression-aware comparisons and sensitivity to the choice of observation window; R + Quarto. | [Published report](https://kenchch.github.io/nz-sheep-decline-by-region/), with validation rules exercised against deliberately corrupted data. |
+| [**Million Song**](https://github.com/Kenchch/Million-Song-Dataset-Analysis-with-Spark) | PySpark genre models and implicit-feedback ALS; training-only resampling, ranking-metric tests and real-Spark model smoke tests. | [Recorded study results and provenance](https://github.com/Kenchch/Million-Song-Dataset-Analysis-with-Spark/blob/main/docs/results.md). Historical results are distinct from the current CLI and synthetic CI fixtures. |
+| [**GHCN-Daily**](https://github.com/Kenchch/GHCN-Daily-Climate-Analysis-with-PySpark) | Fixed-width metadata parsing, station enrichment and weather aggregation in Spark; synthetic regression tests exercise quality flags and unit conversion. | [Workflow and interpretation limits](https://github.com/Kenchch/GHCN-Daily-Climate-Analysis-with-PySpark#reproducibility-notes). Station summaries are not coverage-adjusted national climate estimates; CI does not establish archive-scale performance. |
 
-These are portfolio and study projects. Sales totals describe historical datasets, and model scores describe experiments; they are not revenue I generated or measured customer impact. The retail pipeline's adoption telemetry is simulated.
+## Reading the results
 
-The two retail projects use the same source data with different cleaning and cancellation rules. Their READMEs explain and reconcile the different sales totals. Each project documents its own reproduction steps, tests and limitations.
+These are portfolio and study projects, not evidence of production deployment or realised commercial impact. Dataset revenue totals and offline model benchmarks are reported with their respective definitions and limitations.
 
-## Tools and approach
-
-My core tools are **Python, SQL and R**, with Spark for distributed processing, Airflow and dbt for pipelines, Power BI for reporting, and PyTorch/ONNX for applied ML.
-
-I focus on source-data checks, recoverable workflows, automated tests and evidence that a reader can inspect.
+The two retail projects use the same UCI source but different acceptance and cancellation rules. Their READMEs reconcile gross positive sales with the R analysis's matched-cancellation result; partial and unmatched returns remain outside that netting method.
 
 ## How this portfolio was built
 
