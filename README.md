@@ -19,20 +19,6 @@ table, atomic versioned publication, a contracted DuckDB mart and a Power BI mod
 
 Archived, kept because they still reproduce rather than because they are current: PySpark coursework implementations for [Million Song](https://github.com/Kenchch/Million-Song-Dataset-Analysis-with-Spark) and [GHCN-Daily](https://github.com/Kenchch/GHCN-Daily-Climate-Analysis-with-PySpark). Each says so at the top, with the reason its Spark pin will not move.
 
-## How I use AI tools
-
-I set the problem, design the data contracts and quality rules, decide what is
-worth measuring, run every benchmark on my own hardware, and review every diff.
-Claude Code and OpenAI Codex draft code, refactor and scaffold tests against
-that. Where a finding in these repositories contradicted something I had
-written, the write-up was corrected rather than the finding dropped.
-
-Commits across these repositories carried `Co-Authored-By` trailers naming
-those tools until 6 September 2026, when I rewrote the history and the trailers
-went with it. That was the wrong call: it removed the disclosure without
-removing the fact, and the pre-rewrite commits are still reachable on GitHub by
-SHA. This section is the disclosure, kept somewhere it cannot quietly go
-missing again.
 
 [![retail CI](https://github.com/Kenchch/retail-ai-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/Kenchch/retail-ai-pipeline/actions/workflows/ci.yml)
 [![pageviews CI](https://github.com/Kenchch/nz-attraction-pageviews/actions/workflows/ci.yml/badge.svg)](https://github.com/Kenchch/nz-attraction-pageviews/actions/workflows/ci.yml)
