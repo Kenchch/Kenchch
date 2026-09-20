@@ -1,0 +1,341 @@
+================================================================
+  能源数据异常日报 Agent —— 最小可行项目方案
+================================================================
+适用对象：能源监管机构 / 政府能源部门 / 电力、燃气公司的数据、调度或市场分析团队
+版本：v0.1        日期：2026-09-20        预计工作量：1 人 × 5 个工作日
+
+
+一、一句话说明
+----------------------------------------------------------------
+每天早上 7 点，一个定时脚本读取前一天（T-1 日）的半小时电价和负荷数据，
+交给一个带 3 个只读工具的 LLM agent。agent 自己决定查什么、和什么对比，
+然后写出一份 300 字以内的中文日报（含异常事件表），保存为 Markdown 文件
+并发到团队邮箱。
+
+
+二、为什么选这个题目（够小、够实用）
+----------------------------------------------------------------
+1. 输入只有一张表（时间戳、节点、价格、负荷），任何能源机构都有类似数据。
+2. 输出只有一份文本。不接入控制系统，不做交易或调度决策，风险很低。
+3. 一个人一周做完，核心代码不到 150 行，单文件。
+4. 仍然具备 agent 的核心特征：模型自主选择调用哪个工具、多轮取数、
+   自主判断是否异常、自主决定是否需要再查。
+
+
+三、范围边界
+----------------------------------------------------------------
+做：
+  1. 读取本地 CSV（或数据库表）里的历史半小时数据。
+  2. 让 agent 用工具查询序列、对比 30 天基线、回看最近 7 天日报。
+  3. 输出固定结构日报：概览 / 异常事件表 / 建议关注 / 数据质量。
+  4. 保存日报文件 + 发邮件。
+
+不做：
+  1. 不写入任何业务系统，不向设备或市场发任何指令。
+  2. 不预测价格，不给交易或调度建议。
+  3. 不做 Web 界面，不做实时流处理，只处理 T-1 日数据。
+  4. 不做多用户权限，日报收件人固定写在配置里。
+
+
+四、总体架构
+----------------------------------------------------------------
+  cron（每天 07:00）
+    |
+    v
+  daily_brief.py
+    |-- 1. 读数据        data/series.csv -> pandas DataFrame（常驻内存）
+    |-- 2. 规则预检      当天缺失率 > 10% 直接发告警邮件并退出，不调用模型
+    |-- 3. agent 循环    Claude Opus 5 + 3 个只读工具，最多 8 轮
+    |       |-- query_series(metric, start, end)     查序列
+    |       |-- baseline_stats(metric, date, days)   查 30 天基线
+    |       `-- recent_notes(days)                   回看近期日报
+    |-- 4. 写文件        reports/2026-09-19.md
+    `-- 5. 发邮件        SMTP（或改成 Slack / 企业微信 webhook，一个函数的事）
+
+关键点：模型只能通过这 3 个函数看到数据，函数是只读的，
+所以"agent 能做什么"的边界就是这 3 个函数的边界。
+
+
+五、数据输入
+----------------------------------------------------------------
+5.1 一张表 data/series.csv，四个字段：
+      ts        半小时时间戳，ISO 8601，本地时区，例如 2026-09-19T00:30
+      node      节点 / 区域编码，例如 BEN2201、OTA2201，或省级汇总编码
+      price     电价，本币 / MWh
+      load_mw   负荷，MW
+
+5.2 示例数据来源（任选其一）
+    - 新西兰：Electricity Authority 的 EMI 平台（emi.ea.govt.nz）公开的
+      批发市场数据集，有半小时最终价格和负荷，可直接下载 CSV。
+    - 中国：省级电力交易中心披露的现货价格；电网公司内部负荷数据。
+    - 燃气公司：把 price 换成管网压力、load_mw 换成日供气量，脚本逻辑不变。
+
+5.3 数据准备
+    - 前期手工把 30 天以上的历史数据放进 series.csv 即可。
+    - 稳定后再写一个 ingest.py：每天把新文件追加进去，去重，时间戳规范化。
+
+
+六、Agent 设计
+----------------------------------------------------------------
+6.1 模型与参数
+    - model：claude-opus-5
+    - 思考：Opus 5 默认开启自适应思考，不用额外配置。
+      output_config 里 effort 设为 medium（日报属于常规任务）；
+      如果回测发现漏报，调到 high。
+    - max_tokens 16000；max_iterations 8（防止工具循环停不下来）。
+    - fallbacks="default" + betas=["server-side-fallback-2026-07-01"]：
+      模型因安全策略拒答时，服务端自动换备用模型重跑，保证日报不断更。
+
+6.2 系统提示词（完整草案，放 prompts/system.txt）
+
+    你是 <机构名> 的电力市场数据分析助手，每天为调度 / 市场团队写一份
+    T-1 日数据日报。
+
+    工作方式：
+    1. 先用 query_series 取当天 price 和 load_mw 的全天序列。
+    2. 对看起来偏高、偏低或缺失的时段，用 baseline_stats 与过去 30 天
+       同一时段对比。
+    3. 用 recent_notes 检查最近 7 天是否已报告过同类事件；
+       是则标注"持续"，不重复描述。
+    4. 只把"高于 P95 或低于 P5，且持续 >= 2 个半小时"的情况列为异常事件，
+       其他波动在概览里一句话带过。
+
+    输出规则：
+    - 中文，正文不超过 300 字（表格不计）。
+    - 固定结构，四个二级标题按顺序出现：
+        ## 概览
+        ## 异常事件      表格列：时段 | 指标 | 实际值 | 基线 P5-P95 | 备注
+        ## 建议关注
+        ## 数据质量
+    - 只陈述数据事实，不解释原因（原因留给人判断），不给交易或调度建议。
+    - 数据缺失时如实写"缺失"，不要估算填补。
+    - 第一行固定写：（本日报由 AI 生成，事实以源数据为准）
+
+6.3 三个工具（全部只读，全部返回纯文本）
+
+    工具 1  query_series(metric, start, end)
+      作用：返回指定指标在 [start, end) 区间的半小时序列，CSV 文本。
+      参数：metric 取 price 或 load_mw；start / end 为 ISO 8601。
+      限制：单次最多 2 天；超出返回 "Error: ..." 提示，让模型分段查。
+
+    工具 2  baseline_stats(metric, date, days=30)
+      作用：返回 date 之前 days 天内，每个半小时时段（48 个）的
+            均值、P5、P95，用于判断当天是否异常。
+      实现：pandas 按 "HH:MM" 分组后取 mean / quantile。
+
+    工具 3  recent_notes(days=7)
+      作用：读取 reports/ 目录最近 days 份日报的"异常事件"段落，拼接返回。
+      用途：去重，识别持续多日的事件。
+
+    设计原则：
+    - 函数的 docstring 就是模型看到的工具说明，必须写清参数取值和单位。
+    - 工具出错时返回以 "Error:" 开头的字符串，不抛异常，让模型自己调整。
+    - 工具返回体控制在几 KB 以内（最多 96 行 CSV），既省 token 又快。
+
+
+七、代码骨架（daily_brief.py，单文件）
+----------------------------------------------------------------
+依赖：Python 3.10+，pip install anthropic pandas
+
+    import os, sys, smtplib, datetime as dt
+    from email.message import EmailMessage
+    import pandas as pd
+    import anthropic
+    from anthropic import beta_tool
+
+    DATA = "data/series.csv"
+    REPORTS = "reports"
+    SYSTEM = open("prompts/system.txt", encoding="utf-8").read()
+
+    df = pd.read_csv(DATA, parse_dates=["ts"]).sort_values("ts")
+
+
+    @beta_tool
+    def query_series(metric: str, start: str, end: str) -> str:
+        """返回指定指标在 [start, end) 区间的半小时序列，CSV 文本。
+
+        Args:
+            metric: "price"（电价，本币/MWh）或 "load_mw"（负荷，MW）。
+            start: 起始时间，ISO 8601，例如 2026-09-19T00:00。
+            end: 结束时间（不含），ISO 8601。单次最多 2 天。
+        """
+        if metric not in ("price", "load_mw"):
+            return "Error: metric 只能是 price 或 load_mw"
+        s, e = pd.Timestamp(start), pd.Timestamp(end)
+        if e - s > pd.Timedelta(days=2):
+            return "Error: 单次最多查询 2 天，请分段查询"
+        part = df[(df.ts >= s) & (df.ts < e)][["ts", "node", metric]]
+        return part.to_csv(index=False) if len(part) else "Error: 该区间无数据"
+
+
+    @beta_tool
+    def baseline_stats(metric: str, date: str, days: int = 30) -> str:
+        """返回 date 之前 days 天内，每个半小时时段的均值、P5、P95。
+
+        Args:
+            metric: "price" 或 "load_mw"。
+            date: 目标日期，YYYY-MM-DD。
+            days: 回看天数，默认 30。
+        """
+        d = pd.Timestamp(date)
+        hist = df[(df.ts >= d - pd.Timedelta(days=days)) & (df.ts < d)].copy()
+        if hist.empty:
+            return "Error: 没有足够的历史数据"
+        hist["slot"] = hist.ts.dt.strftime("%H:%M")
+        g = hist.groupby("slot")[metric]
+        out = pd.DataFrame({"mean": g.mean(), "p5": g.quantile(0.05),
+                            "p95": g.quantile(0.95)})
+        return out.round(1).to_csv()
+
+
+    @beta_tool
+    def recent_notes(days: int = 7) -> str:
+        """返回最近 days 份日报中的"异常事件"段落，用于去重和识别持续事件。
+
+        Args:
+            days: 回看的日报份数，默认 7。
+        """
+        os.makedirs(REPORTS, exist_ok=True)
+        files = sorted(f for f in os.listdir(REPORTS) if f.endswith(".md"))[-days:]
+        chunks = []
+        for f in files:
+            text = open(os.path.join(REPORTS, f), encoding="utf-8").read()
+            if "## 异常事件" in text:
+                seg = text.split("## 异常事件", 1)[1].split("## ", 1)[0]
+                chunks.append(f"[{f[:-3]}]\n{seg.strip()}")
+        return "\n\n".join(chunks) or "最近没有日报记录"
+
+
+    def run(date: str) -> str:
+        client = anthropic.Anthropic()          # 从 ANTHROPIC_API_KEY 读取密钥
+        runner = client.beta.messages.tool_runner(
+            model="claude-opus-5",
+            max_tokens=16000,
+            max_iterations=8,
+            system=SYSTEM,
+            output_config={"effort": "medium"},
+            betas=["server-side-fallback-2026-07-01"],
+            fallbacks="default",
+            tools=[query_series, baseline_stats, recent_notes],
+            messages=[{"role": "user", "content": f"请生成 {date} 的日报。"}],
+        )
+        final = runner.until_done()             # SDK 自动执行工具循环
+        if final.stop_reason == "refusal":
+            raise RuntimeError(f"模型拒绝生成：{final.stop_details}")
+        print(f"usage: {final.usage}", file=sys.stderr)   # 审计：记录 token 用量
+        return "".join(b.text for b in final.content if b.type == "text")
+
+
+    def send_mail(subject: str, body: str) -> None:
+        msg = EmailMessage()
+        msg["From"] = os.environ["MAIL_FROM"]
+        msg["To"] = os.environ["MAIL_TO"]
+        msg["Subject"] = subject
+        msg.set_content(body)
+        with smtplib.SMTP(os.environ["SMTP_HOST"], 587) as s:
+            s.starttls()
+            s.login(os.environ["SMTP_USER"], os.environ["SMTP_PASS"])
+            s.send_message(msg)
+
+
+    if __name__ == "__main__":
+        date = sys.argv[1] if len(sys.argv) > 1 else \
+               str(dt.date.today() - dt.timedelta(days=1))
+        day = df[df.ts.dt.strftime("%Y-%m-%d") == date]
+        missing = 1 - len(day) / (48 * df.node.nunique())
+        if missing > 0.10:                       # 规则预检，不调模型
+            send_mail(f"[日报失败] {date} 数据缺失 {missing:.0%}", "请检查数据管道。")
+            sys.exit(1)
+        report = run(date)
+        os.makedirs(REPORTS, exist_ok=True)
+        open(f"{REPORTS}/{date}.md", "w", encoding="utf-8").write(report)
+        send_mail(f"[电力数据日报] {date}", report)
+
+说明：
+  - 没有手写 while 循环。tool_runner 负责"调模型 -> 执行工具 -> 把结果回传"
+    的循环，直到模型不再调用工具。
+  - 三个工具都只读全局 df 和 reports/ 目录。
+  - 补跑历史日期：python daily_brief.py 2026-09-15
+
+
+八、部署与运行
+----------------------------------------------------------------
+8.1 环境
+    - 一台能访问 api.anthropic.com 的 Linux 机器或容器。
+      内网机构可用代理出口，只放行这一个域名。
+    - .env 文件只放在服务器上，权限 600，内容：
+        ANTHROPIC_API_KEY=...
+        SMTP_HOST=...  SMTP_USER=...  SMTP_PASS=...
+        MAIL_FROM=...  MAIL_TO=...
+
+8.2 目录结构
+    energy-brief/
+      daily_brief.py
+      prompts/system.txt
+      data/series.csv
+      reports/            每天一份 YYYY-MM-DD.md
+      logs/
+      .env
+      .gitignore          含 .env、data/、reports/、logs/
+
+8.3 cron（每天 07:00）
+    0 7 * * * cd /opt/energy-brief && set -a && . ./.env && set +a && \
+      python daily_brief.py >> logs/$(date +\%F).log 2>&1
+
+8.4 失败处理
+    - 脚本非零退出时 cron 会发系统邮件；也可在命令末尾加 || curl <告警 webhook>。
+    - 429 / 5xx 由 SDK 自动重试 2 次，不用自己写重试。
+    - 数据缺失、模型拒答、邮件失败三种情况都会在日志里留下明确原因。
+
+
+九、安全与合规
+----------------------------------------------------------------
+1. 只读：工具只读内存中的 DataFrame 和 reports 目录，代码里没有写业务系统的路径。
+2. 数据最小化：每次只把当天序列和 48 行基线统计发给模型，不发全量表。
+   节点编码如属敏感信息，可在 query_series 里映射成 N1、N2 再返回。
+3. 密钥：API key 只在 .env，不进 git。
+4. 人工在环：日报首行固定注明 AI 生成；关键异常由值班人员复核后再转发。
+5. 审计：每次运行记录 token 用量（final.usage）、耗时、日期，写入日志。
+6. 数据驻留：如机构要求数据不出境或不出指定云，改用 Amazon Bedrock 或
+   Google Vertex AI 上的 Claude（AnthropicBedrockMantle / AnthropicVertex 客户端），
+   只改客户端初始化那一行。
+
+
+十、验收标准（做到这些就算完成）
+----------------------------------------------------------------
+1. 连续 5 个工作日自动生成日报，无人工干预。
+2. 人工构造 3 个异常日（价格尖峰、负荷骤降、半天缺失）回测：
+   3 个异常都出现在"异常事件"表中；缺失日不臆造数据。
+3. 3 个正常日回测：异常事件表为空或不超过 1 条。
+4. 每份日报四段结构齐全，正文不超过 300 字。
+5. 单次运行成本低于 0.3 美元，耗时低于 3 分钟。
+
+
+十一、一周实施计划
+----------------------------------------------------------------
+Day 1  准备 30 天以上样例数据放进 series.csv；用 pandas 跑通基线统计。
+Day 2  写 3 个工具和系统提示词；在 Python REPL 里手动调 tool_runner，
+       观察模型调用工具的顺序是否合理。
+Day 3  接邮件发送、cron、日志；用补跑功能做 6 天回测（3 异常 + 3 正常）。
+Day 4  根据回测结果调提示词（阈值、字数、去重规则）；写 README。
+Day 5  上线试运行；请 2 位业务同事读日报给反馈；记录实际 token 成本。
+
+
+十二、成本估算
+----------------------------------------------------------------
+- 每次运行：输入约 8k-15k token（系统提示 + 工具结果），
+  输出约 2k-4k token（思考 token 计入输出）。
+- 按 Opus 5 价格（输入 5 美元 / 百万 token，输出 25 美元 / 百万 token）：
+  每天约 0.1-0.2 美元，每月约 3-6 美元。
+- 若需再省：系统提示加 cache_control 做提示缓存；
+  或换成 claude-sonnet-5（输入 2 美元、输出 10 美元 / 百万 token）。
+- 人力：1 人 × 5 天。
+
+
+十三、后续可扩展（本期不做）
+----------------------------------------------------------------
+- 多指标：加风电 / 光伏出力、水库水位、燃气管网压力，只需扩展 series.csv 字段。
+- 周报：每周一把 7 份日报再交给模型做周总结。
+- 问答接口：允许同事在 Slack / 企业微信里问"上周二 18:00 为什么价格高"，
+  复用同一套工具。
+- 结构化输出：让模型同时输出 JSON 事件表写入数据库，做看板。
