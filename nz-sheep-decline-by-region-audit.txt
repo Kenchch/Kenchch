@@ -356,7 +356,7 @@ D-01【高】README 的 AI 使用说明链接已失效；关于 trailer 的陈�
       "## Other projects" 两个标题。
     - PR 模板仍写着 "This repository states its practice on the profile README"。
     - README 说 Co-Authored-By 尾注已在 2026-09-06 从历史中移除，但 main 上仍有 5 个
-      提交带 指向 Claude 的 Co-authored-by 尾注：
+      提交带有指向 Claude 的 Co-authored-by 尾注：
       7731581（#4，09-06）、56a71fd（#8）、c87e209（#10）、f11e78d（#11）、b12200c（#12）。
   影响：AI 参与情况的公开披露实际上已经不存在，README 却声称存在，这是透明度层面的
         错误陈述。对作品集项目来说，这会直接损害可信度。
