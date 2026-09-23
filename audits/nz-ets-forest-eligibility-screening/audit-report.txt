@@ -1,0 +1,791 @@
+================================================================================
+  NZ ETS 森林资格筛查项目 —— 多角度审计报告（汇总版）
+================================================================================
+
+审计对象   : https://github.com/Kenchch/nz-ets-forest-eligibility-screening
+提交版本   : 622e3b8 (2026-09-16, "chore: keep ArcGIS Pro project files out of the repository")
+审计日期   : 2026-09-23
+审计方式   : 5 个独立 agent 各从一个角度并行审计，再由主审去重、交叉核对并复现关键结论
+             [DOM] 法规 / 领域忠实度（Climate Change Response Act 2002、MPI 指南）
+             [GEO] 地理空间与算法正确性（CRS、几何、宽度方法、叠加计算）
+             [QA ] 软件工程、测试质量、打包与可维护性
+             [REP] 可复现性、数据溯源、CI/DevOps、许可与署名
+             [SEC/DOC] I/O 安全与健壮性 + 文档与输出一致性
+详细分报告 : 同目录 details/ 下 5 个 .md 文件，含完整证据、复现脚本输出和修复代码
+
+基线状态（主审实测）
+  - pytest: 55 passed
+  - scripts/verify_checksums.py: 7 个输入文件全部 ok
+  - 按 .github/workflows/ci.yml 原样跑完整流程（pytest → verify_checksums → reproduce →
+    git diff → semantic_hashes）：全部通过
+  - 包的分支覆盖率 87%；把 CI 端到端脚本算进来后，src/ + scripts/ 合计 68%
+  - 同一环境内连续运行两次 reproduce.py，输出逐字节一致
+
+审计限制
+  - 本环境出站代理拦截了 legislation.govt.nz、mpi.govt.nz、ArcGIS REST 服务和
+    basemaps.linz.govt.nz。法条类结论依据仓库 rules/SOURCES.md 的逐字引文和网络搜索摘要，
+    下载脚本也无法在线重跑。依赖这些外部信息的结论都标注了【需确认】。
+  - 审计全程只读，原仓库没有做任何修改，所有运行都在 scratchpad 副本中进行。
+
+
+--------------------------------------------------------------------------------
+一、总体结论
+--------------------------------------------------------------------------------
+
+工程基础扎实：采用 fail-loud 校验，不自动重投影；GeoPackage 字节确定性处理到位；输出先写
+staging 目录再替换；免责声明较充分；SOURCES.md 的法源工作认真；核心算法模块 100% 分支覆盖。
+问题主要集中在下面五个方面：
+
+  1. 【规则口径】重叠"实质性"只看相对 1% 阈值。LCDB 单元最大 36,801 ha，1% 就是数百公顷，
+     结果有 43 个进入候选队列的单元各含 ≥1 ha 已测绘 pre-1990 人工林（合计 990.9 ha，最大
+     146.9 ha），22 个各含 ≥1 ha DOC 保护地（合计 660.1 ha，最大 297 ha）。README 把这些
+     称作"边界碎片（sliver）"，与数据不符。
+  2. 【规则口径】R-02 宽度规则在真实数据上等价于"2A/P ≥ 30 m"，erosion 从未决定过结果；而
+     2A/P 系统性偏低，恰好 30 m 宽的直条带也会被判失败。pre-1990 证据只取了 LUCAS 72 类，
+     漏掉了 71 类（天然林）。2025 年 LUC 1–6 外来林注册限制也没有写进规则登记册。
+  3. 【安全】review_map.html 存在存储型 XSS（输入中任意属性值都能触发）；LINZ API key 可能被
+     写进受版本控制的 HTML。
+  4. 【人工复核环节】人工复核是项目自称"最薄弱环节"的唯一证据闸门，但：地图的说明面板因 JS
+     报错从不显示；评审卡片上的十字标记有一半落在多边形外；固定的 30 个样本用当前代码无法复现，
+     且 167 个 advisory 候选的入样概率为 0；标签校验可以用空白字符串绕过。
+  5. 【可复现与溯源】上游原始数据没有归档；8 个已提交的二进制/HTML 产物跨环境会漂移但 CI 不检查；
+     依赖没有锁定；manifest 缺少 git SHA、库版本和规则配置。
+
+问题数量（去重合并后）: 高 7 项 / 中 19 项 / 低 11 项 / 信息 1 项
+
+
+--------------------------------------------------------------------------------
+二、问题汇总表
+--------------------------------------------------------------------------------
+
+编号   严重度  标题                                                      来源（分报告编号）
+-----  ------  --------------------------------------------------------  -----------------------------
+H-01   高      review_map.html 存储型 XSS                                SEC-01, QA-10
+H-02   高      评审地图说明面板因 JS 报错从不显示，地图上无免责声明        DOC-01
+H-03   高      重叠实质性只用 1% 相对阈值；整单元通过或整单元排除          DOM-02, DOM-06, GEO-01
+H-04   高      pre-1990 证据只取 LUCAS 72/72，漏掉 71 天然林【影响数需确认】 DOM-01, GEO-06
+H-05   高      2025 年 LUC 1–6 外来林注册限制未纳入规则【法条细节需确认】  DOM-03
+H-06   高      候选重叠校验容差小于浮点噪声，合法输入被误拒               GEO-03, QA-01
+H-07   高      上游原始数据未归档，processed 输入无法重新推导             REP-01
+M-01   中      R-02 实际只由向下偏的 2A/P 决定；恰好 30 m 宽判失败          DOM-05, GEO-02, GEO-07
+M-02   中      R-01/R-02 按单个 LCDB 单元判定，不合并相邻可种植单元         DOM-04, GEO-04
+M-03   中      run_screening 忽略 config.width_threshold_m，产物互相矛盾   GEO-05, QA-02
+M-04   中      审计表与规则登记表脱钩（可测性标志、observed、名称、计数）  DOM-07, QA-04, QA-05, DOC-07
+M-05   中      业务逻辑多处重复；build_findings 用取整列重新判定          QA-06, GEO-08
+M-06   中      run_manifest 缺溯源字段；固定的伪时间戳                    REP-08, QA-03
+M-07   中      CI 覆盖缺口：二进制/HTML/manifest/notebook 未检查           REP-04, REP-07, QA-09
+M-08   中      依赖浮动无锁文件；声明下限装不起来；conda 路径未验证        REP-06, QA-16
+M-09   中      semantic_hashes.py 盲区（列名/CRS/额外图层不入哈希）         REP-05
+M-10   中      ArcGIS REST 分批下载静默截断，无重试，缓存不校验参数        REP-02, SEC-05
+M-11   中      "-part-N" 编号依赖行序，unit_id 并不稳定                   REP-03, GEO-09
+M-12   中      LINZ API key 写进受版本控制的 HTML，且未转义                SEC-02, REP-11, QA-10
+M-13   中      run_screening 删除输出目录中的同名文件和整个 figures/        SEC-03
+M-14   中      评审标签校验缺口（空白、日期、编码、公式注入、原地改写）      SEC-04, QA-13, DOC-08
+M-15   中      固定评审样本不可复现，advisory 候选入样概率为 0             DOC-02
+M-16   中      评审卡片十字标记错位；双面板重复；影像来源与分辨率未记录    DOC-03, REP-09
+M-17   中      数据许可与署名不完整；缺少 CITATION.cff                     REP-10
+M-18   中      CLI 与脚本的参数、错误处理缺陷                              QA-07, QA-08, QA-12, QA-14, SEC-06
+M-19   中      测试缺口（CLI、错误路径、非默认配置、真实坐标量级）          QA-09
+L-01   低      README 多瓣统计（181/53/23）定义写错，且无生成代码          DOC-04, QA-11, GEO-07
+L-02   低      README Finding 2 的原因解释不准确                            GEO-07
+L-03   低      README 等文档中过时或不准确的表述                           DOC-05, REP-13, QA-15
+L-04   低      免责声明覆盖不全（CSV/JSON/图/卡片/HTML）                    DOC-06
+L-05   低      R-05 白名单有从未命中的条目，类名无校验                      DOM-08
+L-06   低      适用范围与其他法定门槛缺失                                  DOM-09
+L-07   低      术语精度问题；R-01 阈值附近的敏感性                          DOM-10, DOM-11
+L-08   低      unit_id 混合类型会崩溃；复合 CRS 被误拒                      GEO-10, GEO-11
+L-09   低      CI 加固与仓库卫生                                            REP-07, REP-12
+L-10   低      库级副作用与硬编码                                          QA-15, QA-17
+L-11   低      findings.csv 嵌套值是 Python repr，不是 JSON                  DOC-07
+I-01   信息    性能                                                          GEO（性能节）
+
+
+--------------------------------------------------------------------------------
+三、高严重度问题（建议优先处理）
+--------------------------------------------------------------------------------
+
+[H-01] review_map.html 存储型 XSS
+  位置 : src/ets_screening/sample_review.py:97, :102
+  问题 : 1) const features={json.dumps(geojson)} 直接嵌进 <script>。json.dumps 不转义
+            "<" 和 "/"，所以任何属性里的 "</script>" 都会提前闭合脚本块，页面一打开就执行。
+         2) popup 用字符串拼 HTML：'<b>'+f.properties.unit_id+'</b>...'，最终经 innerHTML
+            渲染。
+         3) 候选层的所有额外列（例如申请人提交的备注字段）会一路带进 review_queue 和 HTML。
+            README 还建议使用 "applicant-supplied stand boundaries"，即输入可能来自利益相关方。
+  证据 : SEC agent 用 Playwright + Chromium 实测：
+           lcdb_class 含 </script><script>...  → 页面加载即执行
+           unit_id 含 <img src=x onerror=...> → 点击 popup 后执行
+           额外列 applicant_note 走完整条 ets-screen 流水线 → 加载即执行
+         主审阅读源码确认了这两处注入点。
+  影响 : 评估员一打开地图，脚本就在本地执行，可以篡改显示的状态，或把数据外发。
+  解决 :
+      def js(value) -> str:
+          return (json.dumps(value).replace("<", "\\u003c").replace(">", "\\u003e")
+                  .replace("&", "\\u0026").replace("\u2028", "\\u2028")
+                  .replace("\u2029", "\\u2029"))
+      # const features={js(geojson)};  L.tileLayer({js(tile_url)}, ...)
+      # popup 用 DOM API 构造，不用字符串拼接：
+      onEachFeature:(f,l)=>{const d=document.createElement('div');
+        const b=document.createElement('b'); b.textContent=String(f.properties.unit_id);
+        d.append(b, document.createElement('br'), 'Status: '+String(f.properties.status));
+        l.bindPopup(d);}
+    - 只导出必要字段：sample[["unit_id","lcdb_class","area_ha","status","geometry"]]
+    - 加 CSP meta（default-src 'none'; img-src https://basemaps.linz.govt.nz data:; ...）
+    - SEC agent 已在副本中验证：修复后 PoC 不再触发，55 个测试仍然全部通过。
+
+[H-02] 评审地图说明面板因 JS 报错从不显示，地图上没有任何免责声明
+  位置 : src/ets_screening/sample_review.py:104-105；已提交的 outputs/gisborne/review/review_map.html
+  问题 : L.control({...}).onAdd=function(){...}.addTo(map) 这一行里，.addTo 实际作用在函数
+         表达式上，抛出 TypeError: (intermediate value).addTo is not a function。
+         面板里的 "Human review queue / 标签词表 / 必须由具名人员完成" 等说明是地图上唯一的
+         操作指引，结果从不渲染。页面也没有图例、比例尺、viewport meta，没有任何
+         "screening / not an eligibility determination" 字样。
+  证据 : Chromium 加载已提交的文件：pageerrors = ["(intermediate value).addTo is not a function"]，
+         .note 元素数为 0。主审读源码确认。现有测试只做字符串断言，不执行 JS。
+  解决 :
+      const note=L.control({position:'topright'});
+      note.onAdd=function(){ ... return d; };
+      note.addTo(map);
+    - 面板首行加 "Screening / triage only — not an ETS eligibility determination"
+    - 加 L.control.scale()、图例、<meta name="viewport">；popup 中链接到对应的卡片
+    - 加一个 Playwright 冒烟测试：断言没有 pageerror 且 .note 数量为 1（没装 Playwright 时 skip）
+    - README:79 的 "Offline; no CDN or API key required" 改为
+      "Leaflet bundled; imagery tiles require network access"
+
+[H-03] 重叠"实质性"只用 1% 相对阈值：大块冲突地进入候选队列，同时又有整单元被排除
+  位置 : src/ets_screening/rules.py:98-112；rules/rule_register.csv（R-03、R-04）；
+         README Finding 1
+  问题 : material = (overlap > 1 m²) AND (overlap / unit_area ≥ 1%)。LCDB 单元面积从
+         0.0001 ha 到 36,801 ha，"1%" 对应的绝对面积相差 8 个数量级，而森林地的法定最小面积
+         只有 1 ha。同时结果是整单元二元化的：
+           - 正向问题：大单元即使含上百公顷冲突地，只要占比 <1% 就算 candidate；而且
+             rule_results.csv 里 R-03 记为 passed=True。
+           - 反向问题：小单元会因为 <15 m 宽的边界碎片被整体排除。由于 DOC 图层 410 个要素里
+             有 236 个是 marginal strip（沿水体的窄条），一条河岸保护带就能让整块私有农地被
+             标为 excluded。
+  证据（主审已复核前两条）:
+      - 43 个 candidate_review 单元各含 ≥1 ha pre-1990 人工林，合计 990.9 ha；最大一例
+        lcdb1000035378-part-11 含 146.9 ha（占 0.90%）
+      - 22 个 candidate_review 单元各含 ≥1 ha DOC 保护地，合计 660.1 ha，最大 297.2 ha
+      - README 称为 sliver 的 679.3 ha 中，有 668.6 ha（98.4%）集中在 25 个单元里，每个单元的
+        重叠都 ≥1 ha；其中 654.5 ha 的重叠区内部有 ≥30 m 宽的核心，是成块的保护地，不是碎片
+      - 反向例子：lcdb1000004902（1.78 ha）被一块 882 m²、处处 <10 m 宽的碎片整体排除；
+        另有 65 个单元（3,237 ha）仅因 90.9 ha marginal strip 被排除
+  影响 : README Finding 1 的核心论断（小比例重叠都是泛化碎片）被数据证伪；筛查结果在两个方向
+         上都会出错。
+  解决 :
+    1) 加绝对面积下限：
+         absolute_material_overlap_m2: float = 10_000.0   # 1 ha
+         material = (area > min_m2) & ((pct >= min_pct) | (area >= absolute_material_overlap_m2))
+    2) 算面积前先用形态学开运算去掉碎片（与 LCDB 镜像的 15 m 简化相匹配）：
+         inter = geom.intersection(target)
+         inter = inter.buffer(-7.5).buffer(7.5).intersection(geom)
+    3) 根本做法：用 candidate.difference(overlay_union) 把冲突部分切出去单独处置，剩余部分
+       重新跑 R-01/R-02，不再让整个制图单元二元化地通过或排除。
+    4) advisory 情况在 rule_results.csv 中把 passed 写成 NA，不再写 True。
+    5) 同步修改 README Finding 1 和 rule_register。
+
+[H-04] pre-1990 证据只取 LUCAS 72/72，漏掉 71 类天然林【受影响单元数需确认】
+  位置 : scripts/download_gisborne_data.py:205
+         where="LUCID_1989 LIKE '72%' AND LUCID_2007 LIKE '72%'"
+         另见 rules/rule_register.csv（R-03）、rules/SOURCES.md
+  问题 : post-1989 forest land 的定义要求该土地 "was not forest land on 31 December 1989"。
+         1989 年是天然林（LUCAS 71）的土地同样不满足。另外，71→72（1989 年天然林、2007 年已是
+         人工林）按定义属于 pre-1990 forest land，也被这个过滤条件漏掉了。
+  证据 : 主审实测证据层 LUCID_1989 只有 "72 - Planted Forest - Pre 1990"（1,933 个），
+         没有任何 71 类。MPI 页面（搜索摘要）写明：1989 年和 2007 年都是天然林的土地
+         "cannot be registered as post-1989 forest land"。
+  影响 : 法定硬性排除被系统性漏检，产生假阳性，与项目自称的"保守原则"方向相反。
+  解决 :
+    - 过滤改为 (LUCID_1989 LIKE '71%' OR LUCID_1989 LIKE '72%')，并保留 1989/2007 两个时点
+      的类别字段。
+    - 按法律路径分成三类证据：
+        natural_1989_2007（71→71，永远不能成为 post-1989）→ material
+        pre1990_planted（2007 年为 72）                    → material
+        forest_1989_deforested_by_2007（可能走 (a)(ii)）   → advisory + 人工复核
+    - 同步更新 rule_register、SOURCES.md 和 README。
+
+[H-05] 2025 年 LUC 1–6 外来林注册限制未纳入规则登记册【法条编号与细节需确认】
+  位置 : rules/rule_register.csv（没有对应行）；rules/SOURCES.md:171-173（只有一句提及）；README
+  问题 : 依据 Climate Change Response (Emissions Trading Scheme—Forestry Conversion)
+         Amendment Act 2025（搜索摘要，原文未能打开），自 2025-10-31 起限制把 LUC 1–6 农地
+         转为外来林后注册进 ETS：每个农场最多注册其 LUC 1–6 土地的约 25%，LUC 6 另有许可安排，
+         并有若干豁免。
+  证据 : 候选集 305,189 ha 全部是草地或灌丛，其中高产外来草地（HPEG）占 281,439 ha，正是这项
+         限制针对的农地转林情形。
+  影响 : 输出没有提示这道门槛，读者会高估候选地块的注册可行性。
+  解决 :
+    - 由熟悉法规的人确认条款后，新增 R-09（partial）：叠加 NZLRI LUC 图层，计算 luc_1_6_pct，
+      作为 flag 输出（不 quarantine），并加入 manual_review_rule_ids 和 unresolved_rules。
+    - 至少应在 README 的范围说明和 SOURCES.md 中明确写出这一限制。
+
+[H-06] 候选重叠校验的容差小于浮点噪声，合法输入被误拒
+  位置 : src/ets_screening/load.py:60-61
+         overlap_area = float(frame.geometry.area.sum() - frame.geometry.union_all().area)
+         if overlap_area > 1e-6: raise ...
+  问题 : 两个约 1e9 m² 的浮点和相减，再与 1e-6 m² 的绝对容差比较。这个量级下 float64 的 ULP
+         约为 2.4e-7，差值的符号和大小基本随机。完整数据集能通过，只是因为差值恰好为负
+         （-1.96e-5）。
+  证据 : 主审已复现：用项目自带数据 data/processed/gisborne_candidates.gpkg 取
+         sample(frac=0.5, random_state=25)，报错
+         "candidate polygons overlap by 0.000 m2"，而逐对求交的真实重叠面积是 0。
+         GEO agent 测 30 个随机半数子集，11 个被误拒；QA agent 测 12 个 1500 要素子集，7 个被误拒。
+  影响 : 用户对同一份数据取子区域（包括通过 ArcGIS 工具）时，约 1/3 的概率被拒，报错信息也没法
+         据此排查。
+  解决 : 改为基于空间索引的逐对精确检测，并在报错中列出冲突的 unit_id：
+      import numpy as np, shapely
+      geoms = frame.geometry.values
+      left, right = frame.sindex.query(geoms, predicate="intersects")
+      keep = left < right
+      inter = shapely.area(shapely.intersection(geoms[left[keep]], geoms[right[keep]]))
+      tol = np.maximum(1e-2, 1e-9 * np.minimum(shapely.area(geoms[left[keep]]),
+                                                shapely.area(geoms[right[keep]])))
+      bad = inter > tol
+      if bad.any():
+          pairs = list(zip(frame["unit_id"].iloc[left[keep][bad]],
+                           frame["unit_id"].iloc[right[keep][bad]]))[:5]
+          raise InputValidationError(f"candidate polygons overlap: {pairs}")
+    - 已验证：真实子集 0 误报，真实重叠照常检出；耗时从约 5 s 降到约 1.9 s。
+    - 补一个"真实坐标量级 + 随机子集"的回归测试。
+
+[H-07] 上游原始数据未归档，processed 输入无法重新推导
+  位置 : scripts/download_gisborne_data.py；data/checksums.sha256；.gitignore（data/raw/*）
+  问题 : 1) 四个来源（Living Atlas 的 LCDB 镜像、MfE LUCAS、DOC PCL、Stats NZ）都是可变的
+            实时 ArcGIS REST 服务。脚本不记录服务版本、lastEditDate、serviceItemId 或下载时间；
+            raw 缓存被 gitignore 排除，没有 checksum，也没有归档。
+         2) 即使上游数据完全不变，GPKG 的物理结构（rtree 节点、触发器 DDL）也随 GDAL 版本变化，
+            所以 processed 文件的 SHA-256 实际上无法重建。checksums.sha256 只能证明"这是当初
+            提交的那几个文件"。
+  证据 : REP agent 把相同要素用 GDAL 3.12.4 和 3.9.1 重写后，字节和 SQL dump 都不同
+         （rtree 节点和触发器不同）。
+  影响 : 第三方按 README 的 "To refresh from the public services" 流程执行，verify_checksums
+         几乎一定失败，而且无法区分三种原因：上游数据变了、GDAL 版本不同、脚本有 bug。
+         "pinned inputs" 的溯源链在 processed 文件这一环就断了。
+  解决 :
+    - 把 raw 下载结果作为数据集发布到 Zenodo/OSF 或 GitHub Release，取得 DOI，并在 manifest
+      中记录 raw 文件的 sha256。
+    - processed 输入也用语义哈希（见 M-09 的修复版）在 CI 中核对；字节 sha256 只作为文件
+      完整性检查。
+    - manifest 增加 retrieved_at、各服务的 currentVersion/lastEditDate/serviceItemId、
+      where 条件、服务端返回的 ID 数量，以及 GDAL/GEOS/PROJ 版本。
+    - 考虑改用 LRIS layer 123148 的正式导出（有版本号和 DOI），替代经过 15 m 简化的镜像。
+
+
+--------------------------------------------------------------------------------
+四、中严重度问题
+--------------------------------------------------------------------------------
+
+[M-01] R-02 实际只由向下偏的 2A/P 决定；恰好 30 m 宽的条带判失败
+  位置 : src/ets_screening/geometry.py:23, :35；src/ets_screening/rules.py:91；README Finding 2
+  问题 : r02 = core_pass & ~(ap_pass != core_pass)，化简后就是 core_pass & ap_pass。真实数据中
+         ap_pass ⇒ core_pass 恒成立，所以 R-02 通过当且仅当 2A/P ≥ 30 m。这与 README "erosion
+         是主判据" 的说法不符。
+         2A/P 用半周长近似中心线长度，对 W×L 矩形得 WL/(W+L) < W，对紧凑形状最多低估一半。
+         另外，buffer(-15) 对恰好 30.000 m 宽的形状返回空，实际生效阈值约为 30.0015 m，
+         而法条只排除宽度 < 30 m 的情形。
+  证据 : 主审复核：erosion 通过而 2A/P 失败的单元 694 个，2A/P 通过而 erosion 失败的 0 个。
+         合成用例：33×304 m 直条带（1.0 ha）→ 2A/P = 29.77 → quarantine；31×400 m → 28.77
+         → quarantine。真实数据中 62 个"只因 R-02 失败"的单元里，有 28 个的等效矩形宽度
+         ≥30 m 且有 erosion 核心。
+  解决 :
+    - 过渡方案：改用等效矩形宽度，把 erosion 作为必要条件，并给 erosion 加容差：
+        def width_equivalent_rectangle(g):
+            A, P = g.area, g.length
+            disc = (P / 4.0) ** 2 - A
+            return math.sqrt(A) if disc <= 0 else P / 4.0 - math.sqrt(disc)
+        core = not g.buffer(-(half_width - 1e-3)).is_empty   # 或 .area > min_core_m2
+        r02 = core & (width_eqrect >= threshold)
+    - 长期方案：实现 MPI 中心线法的近似版本（骨架取最长路径作为中心线，每 20 m 做一条垂直
+      截线取平均）。
+    - README 中关于 erosion 是主判据的描述要同步更正。
+
+[M-02] R-01/R-02 按单个 LCDB 单元判定，不合并相邻的可种植单元
+  位置 : src/ets_screening/rules.py:88；下载脚本中的 explode 步骤
+  问题 : 法定 1 ha 和平均宽度针对的是森林区域，不是土地覆盖制图单元。(c)(ii) 的 contiguity
+         例外和 MPI 的 15 m 规则都要求把相邻区域一起考虑。rule_register 虽写了
+         "adjacency is not tested"，但没有量化影响。
+  证据 : 716 个可种植单元仅因 R-01（或 R-01 加 R-02）被隔离。其中 307 个与相邻可种植单元合计
+         ≥1 ha，274 个紧挨 candidate_review 单元。例：lcdb1000417456（0.9987 ha）与一个
+         16,345 ha 的候选单元共边，却被隔离。
+  解决 : 先用 buffer(7.5)（对应 15 m 间距）把可种植单元合并成"造林块"，在块上检验 R-01/R-02，
+         并输出 contiguous_plantable_ha 列：
+      blocks = gpd.GeoDataFrame(geometry=[plantable.buffer(7.5).union_all().buffer(-7.5)],
+                                crs=out.crs).explode(ignore_index=True)
+      blocks["block_area_ha"] = blocks.area / 1e4
+      pts = plantable[["unit_id"]].set_geometry(plantable.representative_point())
+      hit = gpd.sjoin(pts, blocks, predicate="within")
+      out["contiguous_plantable_ha"] = out["unit_id"].map(hit.set_index("unit_id")["block_area_ha"])
+      out["r01_area_pass"] = (raw_area_ha >= 1) | (out["contiguous_plantable_ha"] >= 1)
+    - 至少应把这类单元标为 advisory "R-01-contiguous"，而不是直接 quarantine。
+
+[M-03] run_screening 忽略 config.width_threshold_m，产物互相矛盾
+  位置 : src/ets_screening/screen.py:101 调用 compare_width_methods(results)，用的是默认 30 m；
+         src/ets_screening/report.py:122 的 axhline(30.0) 写死；rules.py 中的规则名也写死为
+         "30 m" 和 "1 ha"
+  证据 : 设 RuleConfig(width_threshold_m=40) 时，G11 在 GPKG 中是 R-02 失败，但在
+         width_method_comparison.csv 中是 30 m 口径下通过。summary、图和 GPKG 三者互相矛盾。
+         宽度还被重复计算了一次（真实数据约 4.4 s）。
+  解决 : 直接从 results 已有的 width_* 列构造 comparison，不再重算；阈值作为参数传给绘图函数；
+         规则名从配置生成；把 dataclasses.asdict(config) 写入 manifest。
+
+[M-04] 审计表与规则登记表脱钩
+  位置 : src/ets_screening/rules.py:127, :133-166；rules/rule_register.csv；
+         src/ets_screening/screen.py 中的 _summary
+  问题 : - 没有任何代码读取 rule_register.csv，两边已经漂移。例如 R-01 在登记册里叫
+           "Area at least 1 hectare"，代码里叫 "... 1 ha"；R-02 分别叫 "Average width at least
+           30 metres" 和 "30 m width erosion proxy"；R-07 在代码里丢了 ">30% in each hectare"，
+           变成 "Crown cover at maturity"，而法条原文是 "has, or is likely to have"。
+         - rule_results.csv 对 R-02、R-03、R-05 都写 testable_from_open_data=True，而登记册里
+           分别是 proxy、partial、proxy。
+         - observed 列只记录布尔值：R-02 出现 694 行 "passed=False, observed=True" 这种自相矛盾
+           的记录；R-03、R-04 的 observed 就是 passed 本身，表里看不到重叠面积和百分比。
+         - summary.csv 中 manual_rules_out_of_scope 写死为 "3"，而 manifest 的 unresolved_rules
+           和 manual_review_rule_ids 都是 4 项（含 R-03）。
+  影响 : 号称 "auditable" 的审计表缺少判定依据，与规则登记册的口径不一致。
+  解决 : - 把 rule_register.csv 打进包（package-data），rule_name 和 testable 标志从这里读取，
+           作为唯一来源。
+         - observed 记录实际测量值（面积、宽度、重叠 m² 与百分比），另加 outcome 列，取值
+           pass / fail / advisory / manual。
+         - summary 中这一项从登记册计数，或改名为 rules_requiring_manual_review = 4。
+
+[M-05] 业务逻辑多处重复；build_findings 用取整列重新判定
+  位置 : scripts/build_findings.py:86-89；notebooks/01_width_rule_comparison.ipynb；screen.py；
+         scripts/download_gisborne_data.py
+  问题 : build_findings 用已经四舍五入的发布列（pct 保留 4 位）和硬编码的 1.0 阈值重新判定
+         materiality，而 rules.py 用的是未取整值。构造一个 0.99996% 的边界用例，规则引擎判为
+         advisory，build_findings 会计为 material。当前真实数据恰好没有触发（224 = 224，
+         691 = 691）。此外，advisory 掩码写了 3 份，reject rate 计算写了 4 份，
+         PLANTABLE_CLASSES 在下载脚本里又重复了一份，notebook 也硬编码了阈值。
+  解决 : 在 GPKG/CSV 中直接发布 r03_material、r04_material 和 advisory 布尔列，下游只读这些列；
+         把共享逻辑抽到 ets_screening 包内，由脚本和 notebook import 使用。
+
+[M-06] run_manifest.json 缺少溯源字段；固定的伪时间戳
+  位置 : src/ets_screening/screen.py:151-167；src/ets_screening/io_utils.py:9；
+         src/ets_screening/report.py 中的 PDF 元数据
+  问题 : manifest 没有记录 git commit、工作树是否 dirty、包与 GDAL/GEOS/PROJ 版本、输入文件
+         sha256、完整的 RuleConfig（minimum_area_ha、width_threshold_m、plantable 类别都没写）、
+         review 抽样的 seed 和大小，以及所用影像源。所有 GPKG 的 last_change 和 PDF 的
+         CreationDate 都写死为 2026-09-12，无论哪天生成，文件都自称生成于这一天。
+  影响 : 拿到输出的审阅者无法回答"用哪个 commit、哪些阈值、哪份数据快照生成的"，与项目
+         "auditable" 的定位不符。
+  解决 :
+      manifest["provenance"] = {
+        "git_commit": <git rev-parse HEAD>, "git_dirty": <git status --porcelain 非空>,
+        "rule_config": {k: sorted(v) if isinstance(v, frozenset) else v
+                        for k, v in dataclasses.asdict(cfg).items()},
+        "inputs_sha256": {...},
+        "review_sample": {"seed": 20260912, "size": 30, "pinned": sample_ids is not None},
+      }
+    - 库版本单独写入 run_environment.json（不参与 diff），避免破坏跨环境的确定性检查。
+    - 固定时间戳改为 SOURCE_DATE_EPOCH（取 git log -1 --format=%ct）。
+
+[M-07] CI 覆盖缺口：多种已提交产物会漂移，但从不被检查
+  位置 : .github/workflows/ci.yml:27-31
+  问题 : CI 的 git diff 只覆盖 CSV 和 findings.json，GPKG 靠语义哈希核对。以下产物没有任何检查：
+         run_manifest.json（完全确定的文本，却不在 diff 路径里）、review_map.html、3 张 PNG、
+         2 份 PDF、33 张卡片 JPG、notebook（不执行）。git diff 也发现不了新生成但未跟踪的文件。
+  证据 : 在与 CI 相同的 ubuntu + Python 3.12 环境中跑完 reproduce 后，8 个已提交文件被改写
+         （两个 GPKG、3 张 PNG、PDF、HTML、review_queue.gpkg），CI 仍然全绿。
+         PNG 漂移的来源之一是 report.py:111 的 sort_values("width_area_perimeter_m") 用了
+         非稳定排序：260 行宽度值重复，tie 的顺序随 numpy/pandas 版本变化。
+         HTML 的坐标漂移来自不同 PROJ 版本的末位差异。
+  解决 :
+      - run: |
+          git diff --exit-code -- "outputs/gisborne/*.csv" "outputs/gisborne/*.json" \
+                                  "outputs/gisborne/review/*.csv"
+          test -z "$(git status --porcelain --untracked-files=all -- outputs)"
+    - 所有影响输出的排序都加唯一的次级键：sort_values(["width_area_perimeter_m", "unit_id"])
+    - HTML 做语义检查：解析 features JSON，坐标 round(7) 后再哈希
+    - PNG/PDF 二选一：不提交、改由 CI/Release 生成；或用 matplotlib.testing.compare 做带容差
+      的比较
+    - 用 nbclient 执行 notebook
+    - 加一步检查卡片文件名是否与 review_sample_ids.csv 一致
+    - 矩阵加入 windows-latest 和 Python 3.11（作者在 Windows/ArcGIS Pro 上开发，历史上出过
+      平台差异）
+
+[M-08] 依赖浮动、没有锁文件；声明的下限装不起来；conda 路径未经验证
+  位置 : pyproject.toml；environment.yml；.github/workflows/ci.yml
+  问题 : 1) 所有依赖都是 ">=" 且没有 lock 文件，CI 每次装当时的最新版，实际用过的版本也不记录。
+         2) 按声明下限解析会得到 shapely==2.0.0 加 numpy 2.x，导入即失败
+            （numpy.core.multiarray failed to import）；Python 3.12 下 shapely 2.0.0 没有 wheel。
+            需要手工加 numpy<2 才能跑，加了之后 55 个测试全过、CSV 一致。
+         3) environment.yml 固定 python=3.12，pyproject 写 >=3.11；README 主推 conda 环境，
+            但 CI 用的是 pip wheel，文档里的复现路径从未被 CI 验证。
+         4) license = {text = "MIT"} 的 TOML table 写法已被 setuptools 弃用（2027-02 起报错）。
+  解决 :
+      [build-system] requires = ["setuptools>=77,<81", "wheel"]
+      [project]
+      license = "MIT"
+      license-files = ["LICENSE", "src/ets_screening/vendor/leaflet-1.9.4/LICENSE"]
+      dependencies = ["geopandas>=1.0", "shapely>=2.0.4", "numpy>=1.24", ...]
+    - 提交 uv.lock（或 pip-compile --generate-hashes 生成的锁文件）和 conda-lock.yml，CI 默认
+      用锁文件安装。
+    - 另加 lowest-direct / latest / conda 三个 job。
+
+[M-09] semantic_hashes.py 有盲区
+  位置 : scripts/semantic_hashes.py:20-37
+  问题 : 哈希内容只有按排序列顺序排列的属性值和 wkb_hex，不包含列名、CRS、几何类型和 dtype，
+         只读默认图层；浮点值按 repr 精确比较。
+  证据 : 以下篡改后哈希不变：把 area_ha 改名为 area_hectares；把 CRS 改标成 EPSG:4326（坐标
+         不动）；追加一个图层 zz_extra。而浮点值只改 1 个 ULP，哈希就失败。
+  影响 : 输出 schema 回归（包括本项目最核心的 CRS 风险）能通过 CI；几何库的正常升级反而可能
+         导致 CI 误报。
+  解决 : 遍历所有图层；把 {layer, crs, 列名与 dtype, 几何类型} 作为头部一起哈希；float 先
+         round(6)、NaN 转为 None；几何先 shapely.set_precision(g, 1e-3).normalize() 再取 WKB；
+         同时断言 unit_id 唯一。完整代码见 details/4-reproducibility-ci-licensing.md 的 REP-05。
+
+[M-10] ArcGIS REST 分批下载会静默截断，没有重试，缓存不校验参数
+  位置 : scripts/download_gisborne_data.py:98-130, :153
+  问题 : 先 returnIdsOnly 取全部 ID，再按每批 500 个用 objectIds 请求，但不核对每批返回的条数，
+         也不检查 exceededTransferLimit。没有重试和退避。只要 raw 缓存文件存在就直接复用，
+         不检查 where、fields 等参数；改了 CANDIDATE_SOURCE_CLASSES 仍会用旧缓存。
+  证据 : 用本地 mock 服务模拟 maxRecordCount=200：日志显示 "1200/1200"，实际只拿到 600 条，
+         没有任何报错。真实服务的 maxRecordCount 因网络限制未能查询，目前是潜在风险。
+  影响 : 排除层（DOC/LUCAS）若静默缺失要素，会直接把本应排除的单元判成 candidate。
+  解决 :
+      if payload.get("exceededTransferLimit"): raise RuntimeError(...)
+      if len(batch) != len(ids): raise RuntimeError(f"requested {len(ids)} got {len(batch)}")
+    - 先读取 {service}?f=json 的 maxRecordCount，令 batch_size = min(500, maxRecordCount)
+    - 加 3–4 次指数退避重试
+    - 缓存旁边存一份 <name>.query.json（where、fields、bbox、时间），参数不一致时重新下载
+    - 把服务端 ID 总数写进 manifest
+
+[M-11] "-part-N" 编号依赖行序，unit_id 并不稳定
+  位置 : scripts/download_gisborne_data.py:218-222；README 称 "assigns stable unit_id values"
+  问题 : sort_values("LCDB_UID") 默认用 quicksort（非稳定排序），groupby().cumcount() 按行序
+         给部件编号。而行序取决于服务端返回顺序和 clip/explode 的输出顺序，与几何本身无关。
+  证据 : 对已提交的 candidates 打乱一次行序后按原逻辑重算，376 个部件中有 319 个的 -part-N
+         变了。几何相同、部件顺序对调时，lcdb1-part-1 的面积从 90000 m² 变成 2500 m²。
+  影响 : 重新下载或 GEOS 升级后，advisory_candidates.csv、findings.json 等处引用的 ID
+         （例如 lcdb1000008518-part-1）可能悄悄指向另一块几何。
+  解决 :
+      rp = candidates.geometry.representative_point()
+      candidates = (candidates.assign(_a=-candidates.area.round(3),
+                                      _y=rp.y.round(3), _x=rp.x.round(3))
+                    .sort_values(["LCDB_UID", "_a", "_y", "_x"], kind="mergesort"))
+    - 加一个测试：打乱输入行序后，unit_id → geometry 的映射保持不变。
+
+[M-12] LINZ API key 被写进受版本控制的 HTML，且未转义
+  位置 : src/ets_screening/sample_review.py:80-86；src/ets_screening/screen.py:147；
+         tests/test_screen.py:41-46
+  问题 : 只要环境里设置了 LINZ_BASEMAP_API_KEY，reproduce.py 就会把它写进被跟踪的
+         outputs/gisborne/review/review_map.html，而 CI 不检查这个文件。key 直接拼进 JS 单引号
+         字符串，没有转义，也可以借此注入 JS。现有测试甚至断言 key 必须出现在 HTML 中。
+  证据 : LINZ_BASEMAP_API_KEY=c01SECRETDEMOKEY python scripts/reproduce.py 之后，git diff 中出现
+         api=c01SECRETDEMOKEY，而 CI 的表格检查仍然通过。
+  影响 : 一旦 git add -A，个人 key 就进入公开仓库的历史。
+  解决 : 提交的产物一律不嵌入 key，reproduce.py 显式传 api_key=None；需要影像时在运行时从
+         location.hash（#api=...）或 localStorage 读取，并用 encodeURIComponent 拼接；必须嵌入
+         时写到被 gitignore 的 review_map.local.html。CI 加一步
+         ! grep -qE "api=[A-Za-z0-9-]{8,}" outputs/gisborne/review/review_map.html。
+         同时修改测试。
+
+[M-13] run_screening 删除输出目录中的同名文件和整个 figures/
+  位置 : src/ets_screening/screen.py:170-187（managed_names 中的 "figures" 会被 shutil.rmtree）
+  问题 : 输出目录里只要有同名文件就被覆盖，有 figures/ 就被整个删除，不做任何确认。CLI 默认
+         --output 是 outputs；ArcGIS 工具要求输出到一个已存在的文件夹。
+  证据 : 在 pipe/figures/ 下放一个 important_notes.txt 后运行 ets-screen --output pipe，这个
+         文件被删除；pipe/summary.csv 原有内容被覆盖。对 outputs/gisborne 直接跑 CLI 时，还会删掉
+         README 引用的 width_disagreement_cases.png（这张图只由 build_findings.py 生成）。
+  解决 : 在输出目录放标记文件 .ets_screening_output；目录非空且没有这个标记时拒绝运行
+         （FileExistsError）。只删除本工具自己生成的具体文件名，
+         (output_dir/"figures"/name).unlink(missing_ok=True)，不再 rmtree。
+
+[M-14] 评审标签（人工证据）校验缺口
+  位置 : src/ets_screening/review_labels.py:28-34, :108；scripts/ingest_review_labels.py:57
+  问题与证据 :
+    - 纯空白的 reviewer，以及用空格补足长度的 evidence_note 都能通过校验。
+    - date.fromisoformat 接受 20260920、2026-W38-7、2099-12-31、1901-01-01 等格式或取值；
+      汇总的 min/max 按字符串比较，首尾日期会颠倒。
+    - Excel 另存为 cp1252 编码时直接抛 UnicodeDecodeError traceback。
+    - reviewer 可以填 =HYPERLINK(...) 这类公式，原样进入 review_summary.csv 和 findings.csv
+      （CSV 公式注入）。
+    - ingest 会原地改写评审人提交的原始文件（去掉 BOM、重新排序），原件的证据链因此丢失。
+    - 过滤"机器 reviewer"的正则容易绕过（Claude_Opus、GPT4o、C1aude 都能通过），又会误伤真人
+      姓名（Ai Tanaka）。README 却称 "automated labels cannot enter the committed evidence
+      chain"，属于过度宣称。
+    - limitation 文本 "Single-reviewer ..." 是写死的，与实际评审人数无关。
+  解决 : 读取用 encoding="utf-8-sig"，捕获 UnicodeDecodeError 后转成 ReviewLabelError；所有单元格
+         先 .str.strip() 再做空值和长度检查；日期用 re.fullmatch(r"\d{4}-\d{2}-\d{2}")，并检查在
+         影像日期与今天之间；拒绝以 = + - @ \t \r 开头的单元格；不覆盖原始文件，改为另写一份
+         规范化副本，并把原件 sha256 写入 summary；README 把机器 reviewer 过滤降级表述为
+         "heuristic filter, not an authentication control"，真正的保证靠签名 commit 或 PR 审批。
+
+[M-15] 固定评审样本不可复现，167 个 advisory 候选入样概率为 0
+  位置 : outputs/gisborne/review/review_sample_ids.csv；src/ets_screening/sample_review.py:44-56；
+         README:77；arcgis/README.md
+  问题 : 当前代码按 SHA-256 哈希排序抽样，对当前 2,687 个候选抽出的 30 个与已提交样本重合 0 个
+         （主审已复核）。SEC agent 查明已提交样本其实来自一个已删除的旧算法：
+         DataFrame.sample(n=30, random_state=20260912)，作用于 2,520 个 clean 候选。所以 167 个
+         advisory 候选的入样概率为 0（主审复核：已提交样本中 advisory 数为 0），而恰恰是这些
+         候选最可能改变结论。
+  影响 : 将来发布的 agreement 或误报率只能代表 clean 候选；"Fixed-seed sample" 的说法用仓库代码
+         无法复现。
+  解决 : 评审尚未开始，现在修改代价最小。二选一：
+         a) 用当前算法重新抽样（建议按 clean/advisory 分层），并重新渲染卡片；
+         b) 在 README 中如实写明抽样框和旧算法。
+         无论哪种，都把抽样框 ID 列表的 sha256 写入 review_summary 和 manifest。
+
+[M-16] 评审卡片十字标记错位；双面板重复；影像来源与分辨率未记录
+  位置 : scripts/download_review_cards.py:62-106
+  问题 : 1) mosaic 的原点对齐到瓦片边界，所以 interior point 在面板中的实际位置是
+            256 + (centre_x mod 256)，但十字固定画在面板中心（TILE_SIZE*4.5, TILE_SIZE*1.5），
+            主审读源码确认。
+         2) 小多边形的概览层级算出来也是 L10，与细节面板相同。
+         3) 代码注释称 L10 约 1.32 m/像素，但对卡片做自相关分析，原生像元约 10 m，更像卫星产品
+            而不是航空正射影像【影像源需确认】。卡片上没有任何版权或许可署名。
+  证据 : 30 张卡片中，十字与 interior point 的偏差最小 15 m、中位数 124 m、最大 218 m；
+         15 张的十字落在多边形外；21 张的两个面板完全相同。
+  影响 : 这些卡片是人工判读的主要材料，一半卡片的标记指向多边形之外；"双面板"在 70% 的卡片上
+         没有提供概览信息；10 m 像元难以判读 1 ha 级别单元中的道路、河床等细节。
+  解决 : panel() 返回 (centre_x - origin_x, centre_y - origin_y)，十字按这个坐标画；或者拼
+         4×4 瓦片后以 interior point 为中心裁剪。概览层级取 min(_choose_level(...),
+         detail_level - 3)。读取服务的 copyrightText 写入 cards/SOURCE.json，并把署名画在卡片
+         底边。评估改用 LINZ Gisborne 亚米级航空影像（CC BY 4.0）。在评审开始前重新渲染卡片。
+
+[M-17] 数据许可与署名不完整；缺少 CITATION.cff
+  位置 : LICENSE；README:288-291；data/README.md；src/ets_screening/report.py 的图与 PDF 页脚
+  问题 : GitHub 把整个仓库识别为 MIT，但仓库里有约 12 MB 第三方数据的派生 GPKG 和大量派生输出。
+         只有 LCDB 写明了许可（CC BY 4.0 + DOI），LUCAS（MfE）、DOC PCL、Stats NZ TA2026、GDC
+         影像都没写许可。CC BY 4.0 要求署名、许可链接和修改说明，而 PDF 页脚只写了数据集名称，
+         3 张 PNG 完全没有署名。仓库没有 CITATION.cff，也没有数据 DOI。
+  解决 : 新增 DATA_LICENSE.md 或 NOTICE，逐个数据集写明权利人、许可（附 URL）、版本/DOI、
+         检索日期和所做修改。README 改为 "Code: MIT; data derivatives: CC BY 4.0 (see
+         DATA_LICENSE.md)"。在图和 PDF 上加署名行，例如 "Data: LCDB v6.0 © Manaaki Whenua
+         (CC BY 4.0); LUCAS © MfE; PCL © DOC; TA2026 © Stats NZ. Modified."。添加 CITATION.cff，
+         接入 Zenodo 取得 DOI。
+
+[M-18] CLI 与脚本的参数、错误处理缺陷
+  - ets-screen：文件不存在、校验失败、reject-rate 中止都直接输出完整 traceback，退出码一律为 1，
+    调用方无法区分；--reject-rate-threshold 不做范围检查（5、-1 都能通过）；--demo 会静默忽略
+    --candidates（路径不存在也 exit 0）；没有 --layer，多图层 GPKG 默认读第一个图层；没有
+    --version。
+  - ets-review-sample：--sample-size -3 实际返回 12 个中的 9 个（走了 head(-3)）；不按 status
+    过滤，把 quarantine.gpkg 作为输入会被接受；输出 GPKG 没有调用 normalise_gpkg，三次运行得到
+    三个不同的哈希；不走 read_layer，所以没有 CRS 和列校验。
+  - scripts/reproduce.py:10, :38：自己没有 argparse，命令行参数会传给 ingest_review_labels。
+    运行 reproduce.py --help 会先花约 23 秒跑完整条流水线、改写 8 个被跟踪的文件，最后才打印
+    另一个脚本的 usage。
+  - arcgis/ets_screening.pyt:81：float(parameters[4].value or 0.80) 会把用户填的阈值 0 静默
+    改成 0.80；异常没有转成 arcpy.AddError；:3 的 import os 未使用。
+  解决 : 在 main() 中分类捕获 InputValidationError、RejectRateExceeded、FileNotFoundError，
+         用 parser.exit(2/3/4, msg) 输出友好信息；argparse 用 type 函数做范围校验；--demo 与
+         输入参数互斥（add_mutually_exclusive_group）；main(argv=None) 统一写成
+         parse_args(argv)，reproduce 调用 ingest_review_labels([])；.pyt 改为
+         0.80 if value is None else float(value)。
+
+[M-19] 测试缺口
+  覆盖率 : 分支覆盖率 rules/geometry/io_utils/arcgis_paths 100%，review_labels 98%，
+           report 96%，load 80%，screen 72%，sample_review 71%，demo_data 56%，包整体 87%；
+           两个下载脚本 0%。
+  问题 : - 两个 console script 的 main() 在任何自动化流程中都没有执行过。
+         - load.py 的错误路径（无 CRS、空图层、null/invalid geometry、缺列）没有测试。
+         - 覆盖已有输出的分支、sample_ids 路径（reproduce.py 走的正是这条）、非默认 RuleConfig、
+           真实坐标量级或大规模数据都没有测试；后两项本可以提前发现 M-03 和 H-06。
+         - test_same_shape_in_wgs84_would_destroy_area_threshold 不调用任何项目代码，属于同义
+           反复。
+         - pyproject 中 addopts 固定 --basetemp=.pytest_tmp，同一目录下并发运行 pytest 会互相
+           清掉临时文件。
+  解决 : 补上 CLI 冒烟测试（subprocess 调用 --demo 和错误输入，断言退出码）、load 错误路径的
+         参数化测试、非默认 RuleConfig 下各产物一致性的测试、H-06 的随机子集回归测试、H-02 的
+         JS 冒烟测试；去掉固定的 --basetemp，改用 pytest 默认的临时目录。
+
+
+--------------------------------------------------------------------------------
+五、低严重度问题
+--------------------------------------------------------------------------------
+
+[L-01] README 的多瓣统计（181 / 53 / 23）定义写错，且没有生成代码
+  README:54-62 写的是 "requiring every part to exceed 500 m² gives 53"。按字面（每个部分都大于
+  阈值）重算只有 16 和 1；53 和 23 实际对应"至少两个部分大于 500 / 1000 m²"。这三个数字不由
+  任何脚本、findings.json 或 notebook 生成。文中所说的 "two separate lobes"，实际是 6 个碎片。
+  另外，181 个中有 8 个的"分裂"仅由 <1 m² 的数值碎片构成。
+  → 改正措辞；把指标计算写进 build_findings.py 和 notebook；核心判定改为
+    buffer(-h).area > min_core_m2。
+
+[L-02] README Finding 2 的原因解释不准确
+  "All 694 run in the same direction" 是 2A/P ≤ 内切圆直径这一数学性质的必然结果，并不是实证
+  发现。694 个分歧单元中有 293 个（42%）是凸多边形（solidity ≥ 0.99），中位面积 0.276 ha、中位
+  顶点数 4，所以分歧主要来自 2A/P 对紧凑形状的偏差，而不是 README 所说的分叉、哑铃形。
+  → 改写归因（与 M-01 一起修改）。
+
+[L-03] README 等文档中过时或不准确的表述
+  - README:209 写 "54 tests"，实测 55 个（本地和 CI 日志都是 55）。建议不写具体数字。
+  - README:79 写 "Offline; no CDN or API key required"，但影像瓦片必须联网获取；无 key 的
+    LINZ URL 是否可用【需确认】。
+  - "rerunning ... produces no diff to commit" 只在同一环境内成立（见 M-07）。
+  - "assigns stable unit_id values" 不成立（见 M-11）。
+  - data/README.md:30 写 "12 invented geometries only for fast unit tests"，实际 3 个文件共
+    14 个几何，而且 tests/ 并不读 data/sample，用的是内存中的 build_demo_layers()。
+  - data/README.md:21 写 "reproject to EPSG:2193"，脚本其实是在请求中带 outSR=2193，并不做
+    重投影。
+  - data/README.md:10 把经过 15 m 简化的 Living Atlas 镜像称为 "authoritative ArcGIS mirror"，
+    措辞需斟酌。
+
+[L-04] 免责声明覆盖不全
+  已有免责声明的：README、run_manifest.json 的 scope 字段、screening_overview.png、两份 PDF、
+  .pyt 的 description。
+  没有的：summary.csv、findings.csv/json、rule_results.csv、advisory_candidates.csv、
+  review_summary.csv、两张宽度图、30 张卡片和 3 张 contact sheet、review_map.html
+  （<title>ETS review queue</title>）。
+  → 在 CSV/JSON 中加 scope 字段或首行注释；图片和卡片加页脚；HTML 标题改为
+    "ETS screening review queue (triage only)"。
+
+[L-05] R-05 白名单有从未命中的条目，类名无校验
+  "Bare or Lightly Vegetated Surfaces" 在 5,712 个单元中命中 0 个；镜像服务的类名（"Gravel and
+  Rock"、"Sand and Gravel" 等）与 LRIS 的规范类名不同【需确认】。"Landslide" 类在 Tairāwhiti
+  很常见，但它既不在候选白名单里，也不在对照名单里【需确认】。
+  → 下载时用 distinct 查询取得实际类别词表，白名单中的名称不在词表里就报错；改为按 LCDB 的
+    整数类别代码映射，而不是按名称字符串。
+
+[L-06] 适用范围与其他法定门槛缺失
+  post-1989 定义 para (b)（area 1 approved land / P90 offsetting land）、是否已注册、可注册权益
+  （landowner、forestry right、lease、Crown conservation contract）都没有规则 ID。候选全部是
+  非森林地，所以输出实际是"潜在造林机会"，而不是 README:12 所说的 "post-1989 forest-land
+  cases"；已经存在但未注册的 post-1989 林（例如再生的 manuka/kanuka）完全不在输入范围内。
+  → 新增 R-10（para (b) 与已注册状态）和 R-11（可注册权益），都作为人工复核项；README 改写
+    适用范围说明。
+
+[L-07] 术语精度问题；R-01 阈值附近的敏感性
+  - rules.py 中的 "Crown cover at maturity"：法条原文是 "has, or is likely to have"，
+    "at maturity" 属于树种 5 m 高度检验。
+  - rule_register 中 R-02 引用 "(c)(i)-(ii)" 并附上 contiguity 例外，但该例外只适用于 (c)(ii)。
+  - 有 92 个可种植单元的面积落在 1 ha 的 ±5% 以内，中位周长约 523 m，边界平均偏移 1 m 就相当于
+    约 5% 的面积变化。README 的局限说明只提到了窄形状。
+  → 修正措辞；对阈值附近的单元加 advisory "R-01-near-threshold"。
+
+[L-08] unit_id 混合类型会崩溃；复合 CRS 被误拒
+  - load.py:53 按原始值查重，rules.py:82-86 却按 astype(str) 做 map。unit_id 为 [1, "1"] 时
+    会抛 InvalidIndexError。
+    → 查重改用 astype(str).duplicated()，或按位置赋值（.to_numpy()）。
+  - 以 EPSG:2193+7839（NZTM + NZVD2016）写出的 GPKG 读回后 to_epsg() 为 None，被
+    assert_nztm2000 拒绝；与 NZTM 等价的 proj4 定义同样被拒。
+    → if crs.is_compound: crs = crs.sub_crs_list[0]，再判断是否与 EPSG:2193 等价。
+    同时补上 read_layer 的真实 CRS 入口测试。
+
+[L-09] CI 加固与仓库卫生
+  - actions/checkout@v4、setup-python@v5 按可变 tag 引用，CI 日志已出现 Node 20 弃用警告
+    → 固定到完整 SHA，并配 Dependabot（package-ecosystem: github-actions）自动更新。
+  - checkout 用默认的 persist-credentials: true → 改为 false。
+  - on: push + pull_request 且没有分支过滤，同仓库的 PR 会跑两次 → push 只限 main；另加
+    schedule 和 workflow_dispatch，用来及早发现依赖漂移。
+  - 没有 lint 步骤 → 加 ruff check。当前有意义的问题只有未使用的导入：screen.py:15、
+    .pyt:3、tests/test_rules.py:1。
+  - 没有 .gitattributes，确定性检查的结果依赖每个开发者的 core.autocrlf 设置 →
+    *.csv/*.json 设为 text eol=lf，*.gpkg/*.jpg/*.png/*.pdf 设为 binary；review_map.html 标记
+    linguist-generated，vendor/ 标记 linguist-vendored（GitHub 目前把这个仓库的主语言识别成
+    HTML）。
+  - 仓库约 36 MB，其中约 89% 是二进制文件，4 天内 candidates.gpkg 已提交 4 次（每次约 4 MB）
+    → 大文件改用 Git LFS，或只放在 Release/Zenodo，仓库中保留 manifest 和哈希。
+  - arcgis/layout_map.pdf（ArcGIS Pro 导出）与 outputs/gisborne/layout_map.pdf（Matplotlib 生成）
+    内容不同却同名，容易混淆 → 改名为 layout_map_arcgispro.pdf。
+
+[L-10] 库级副作用与硬编码
+  - report.py:11 在 import 时执行 matplotlib.use("Agg")，已验证会把 Jupyter 的 inline backend
+    切换掉 → 改为在绘图函数内使用 Figure 对象或局部 backend。
+  - PDF 元数据中作者 "Feng Jiang" 写死。
+  - 默认输出时，staging 临时目录建在 cwd 下，且不在 .gitignore 范围内。
+  - 整个包没有使用 logging。
+  - run_screening 有 9 个参数，约 120 行。
+  - arcgis/build_layout.py 写死了 2,687 / 2,801 / 224 / 694 / 22.5 m 等结果数字，目前与输出
+    一致，但数据一变就会悄悄过时 → 改为从 summary.csv 或 findings.json 读取。
+
+[L-11] findings.csv 嵌套值是 Python repr
+  build_findings.py 写出的 failed_by_rule 是 "{'R-01': 1489, ...}"，width_example_ids 是
+  "['lcdb...', ...]"，都不能用 json.loads 解析 → 写 CSV 前先 json.dumps。
+
+[I-01] 性能（信息）
+  真实数据 5,712 个单元跑 evaluate_rules 约需 12.3 s，其中 validate 的 union_all 约 5.1 s；
+  run_screening 中宽度又重复计算了一次，约 4.4 s。代码都基于 sindex，没有 O(n²) 循环，
+  目前规模下可以接受。H-06 和 M-03 的修复会顺带节省约 7 s。
+
+
+--------------------------------------------------------------------------------
+六、修复路线图（建议顺序）
+--------------------------------------------------------------------------------
+
+第 1 步：立即修复（小改动、影响大，约 1 天）
+  □ H-01  HTML 转义与 DOM 方式构造 popup（sample_review.py，约 20 行）
+  □ H-02  修正 L.control 调用，加免责声明和图例（1 行加若干行）
+  □ M-12  提交产物中不嵌入 API key；CI 加 grep 检查
+  □ H-06  重叠校验改为逐对精确检测
+  □ M-03  comparison 复用 results 中的宽度列，阈值参数化
+  □ M-13  输出目录加标记文件，不再 rmtree
+  □ M-18  reproduce.py --help；.pyt 中 0 被改成 0.80；CLI 退出码
+
+第 2 步：规则口径修正（需要重新生成 Gisborne 输出并改写 README 的 Findings，约 1 周）
+  □ H-03  增加绝对 1 ha 阈值和碎片过滤；最终改为 difference 切分后重新筛查
+  □ H-04  pre-1990 证据纳入 LUCAS 71，并按法律路径分级
+  □ M-01  R-02 改用等效矩形宽度加带容差的 erosion，或实现中心线法
+  □ M-02  相邻可种植单元合并后再判 R-01/R-02
+  □ H-05  请法规专家确认 LUC 1–6 限制，新增 R-09
+  □ M-04  rule_register 作为唯一来源；observed 记录测量值；加 outcome 列
+  □ M-05  下游读取 material 布尔列，去掉重复逻辑
+  □ L-01、L-02、L-06、L-07  同步修改 README 和登记册的表述
+
+第 3 步：人工复核环节（必须在复核开始前完成）
+  □ M-15  重新分层抽样（clean + advisory）
+  □ M-16  修正十字定位和概览层级，改用高分辨率影像并加署名，重新渲染卡片
+  □ M-14  加固标签校验，不再原地改写原始文件
+
+第 4 步：可复现性与合规（约 1 周）
+  □ H-07  raw 数据归档到 Zenodo/Release，并记录服务版本
+  □ M-06  manifest 加入 git SHA、库版本、RuleConfig、输入哈希
+  □ M-07、M-08、M-09、L-09  CI 扩展检查范围、锁定依赖、修复语义哈希、固定 action SHA、
+                           加 .gitattributes
+  □ M-10、M-11  下载完整性校验、重试、部件稳定编号
+  □ M-17  DATA_LICENSE.md、图上署名、CITATION.cff
+  □ M-19  补测试
+
+
+--------------------------------------------------------------------------------
+七、项目优点（各 agent 共识）
+--------------------------------------------------------------------------------
+
+  - 定位诚实：README、manifest、PDF、概览图、ArcGIS 工具说明都写明 "screening/triage only"；
+    R-04/R-05 明确标为项目策略而非法定规则；人工复核如实标为 pending，没有发布任何准确率；
+    README 中的主要数字经复核都与输出一致（5,712 / 302 / 78 / 694 / 181 等）。
+  - 法源工作扎实：SOURCES.md 逐字引用 s 4 定义，注明版本日期和"未并入修正"的警示；正确处理了
+    LCDB 没有 1990 时点的问题，用 LUCAS 1989/2007 作为法定日期的代理。
+  - fail-loud 设计：不自动重投影，CRS 守卫实测没有误放行；拒绝 null/empty/invalid/multipart/
+    重叠几何；reject-rate 闸门在写任何文件之前中止；先写 staging 再替换；没有静默吞掉异常。
+  - 确定性工程到位：normalise_gpkg 固定 SQLite 头部和时间戳，同一环境内输出逐字节一致；在
+    声明下限与最新两套依赖之间，所有 CSV/JSON 逐字节一致，GPKG 语义哈希一致；用语义哈希而不是
+    字节哈希核对 GPKG 输出，这个设计是对的。
+  - 叠加计算正确：先用 sindex 选出相交要素、局部 union 后再求交，避免了重复计算；只接触边界时
+    面积为 0，不算重叠；R-01 用未取整的面积判定，有 0.99996 ha 的边界测试。
+  - 供应链干净：vendored Leaflet 1.9.4 与 npm 官方包逐字节一致，BSD-2 LICENSE 保留在源码和
+    wheel 中；只用 HTTPS 并保留 TLS 校验、设置了 timeout；没有 eval/pickle/shell=True；
+    CI 使用 permissions: contents: read。
+  - 核心模块测试质量高：rules、geometry、io_utils、arcgis_paths 100% 分支覆盖，用"逐维破坏一个
+    有效样本"的方式测试；wheel 非 editable 安装后在仓库外运行正常。
+
+
+--------------------------------------------------------------------------------
+附录 A：主审复核记录（主审亲自复现或读码确认的结论）
+--------------------------------------------------------------------------------
+
+  H-01  读 sample_review.py:97/:102 确认两个注入点（SEC agent 另有 Chromium 实测）
+  H-02  读 sample_review.py:104-105 确认 .addTo 作用在函数表达式上
+  H-03  从已提交的 candidates.gpkg 重算：43 个单元 / 990.9 ha（pre-1990），22 个单元 /
+        660.1 ha，最大 297.2 ha（DOC）；最大一例 lcdb1000035378-part-11 占 0.8985%
+  H-04  证据层 LUCID_1989 值域只有 "72 - Planted Forest - Pre 1990"（1,933 个）
+  H-06  sample(frac=0.5, random_state=25) 子集复现 "overlap by 0.000 m2" 误拒
+  M-01  erosion 通过而 2A/P 失败 694 个，反之 0 个
+  M-03  读 screen.py:101 确认调用 compare_width_methods 时没有传阈值
+  M-13  读 screen.py:170-187 确认对 figures 执行 rmtree
+  M-15  用当前 select_review_sample 抽样，与已提交样本重合 0/30；已提交样本中 advisory 数为 0
+  M-16  读 download_review_cards.py:101-102 确认十字固定画在面板中心
+
+  其余结论来自各 agent 的实测，证据见 details/ 下的分报告。分报告中个别行号有误
+  （例如 ingest_review_labels.py 只有 72 行，SEC 分报告里引用的 :218-232 不对），本汇总已按
+  实际源码改正。
+
+附录 B：分报告文件
+  details/1-domain-regulatory.md            DOM-01 … DOM-11
+  details/2-geospatial.md                   GEO-01 … GEO-11
+  details/3-code-quality-tests.md           QA-01 … QA-17（含覆盖率明细）
+  details/4-reproducibility-ci-licensing.md REP-01 … REP-13
+  details/5-security-docs.md                SEC-01 … SEC-06, DOC-01 … DOC-08
+
+================================================================================
