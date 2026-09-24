@@ -1,0 +1,1306 @@
+======================================================================
+ 项目审计报告：Kenchch/nz-sheep-decline-by-region
+======================================================================
+
+审计对象：https://github.com/Kenchch/nz-sheep-decline-by-region
+提交版本：main @ 7ac588a（2026-09-22，PR #17）
+审计日期：2026-09-23
+审计方式：5 个 agent 并行，各查一个方面；主会话汇总、去重，并抽查复核关键结论
+仓库改动：无。全程只读，实验都在临时副本中进行
+
+严重程度分级：
+  高   = 会误导读者对核心结论的理解，或会静默产出错误结果
+  中   = 明确的缺陷或不一致，应尽快修复
+  低   = 局部问题、潜在隐患或文字瑕疵
+  建议 = 改进项，不是缺陷
+
+条目编号：
+  S = 数据与统计方法
+  D = 报告、文档与可视化
+  R = R 代码与测试
+  P = PySpark/Databricks 移植
+  C = CI/CD、供应链与仓库卫生
+  L = 版本、引用与许可证
+每条末尾的"来源"标明是哪个 agent 发现的；几个 agent 各自发现的同一问题已合并成一条。
+
+
+----------------------------------------------------------------------
+ 零、各 agent 的角度与实际运行情况
+----------------------------------------------------------------------
+
+1. 数据与统计 agent
+   - 用 Python 标准库从原始 CSV 独立重算了 README 和报告里的全部头条数字。
+   - 结果与 outputs/*.csv 逐行对比，0 处不一致。
+2. R 代码 agent
+   - 用 apt 装了 R 4.3.3。CRAN 被网络代理拦截，缺 janitor 和 validate，其中 janitor 用本地替身代替。
+   - tests/test-r-contracts.R 全部通过。
+   - checks.R 中不依赖 validate 的 5 个 CSV 逐字节复现。
+   - 对 R/load.R 做了 19 个变异体，16 个被测试杀死。
+3. PySpark agent
+   - 装了 pyspark==4.2.0 和 pandas==2.3.3，在仓库副本上跑 databricks/run_local.py：PASS，耗时 1 分 17 秒。
+   - 另写了场景测试，做了 5 个变异体。
+4. CI agent
+   - 用 GitHub API 只读查看了 71 次 workflow run 及其日志，以及分支、tag 和 release。
+   - 用 cffconvert 校验 CITATION.cff。
+   - 模拟 Windows、macOS 风格的 clone，验证原始 CSV 的哈希。
+   - 用 git ls-remote 核对了 5 个 action 的 SHA。
+5. 报告与文档 agent
+   - 审阅 README、index.qmd、CHANGELOG 等文档，逐张看了图表。
+   - 克隆 gh-pages 分支检查已部署的 HTML。结论：线上版本与 main 同步，不陈旧。
+
+主会话独立复核过的结论：
+  - S-01：前三地区占 2002 年基数的 50.6%，占下降的 54.0%，Otago 降幅 37.1%
+  - S-02：原始 CSV 每年行数 2002–2011 为 560–810，2012 起恒为 880
+  - D-01：
+      - profile 仓库 README 的 AI 小节已在 3314dc3（2026-09-09）删除
+      - main 上仍有 5 个提交带 Co-authored-by 尾注（7731581、56a71fd、c87e209、f11e78d、b12200c）
+  - D-07："all three are reported below"说的窗口与下方表格不一致
+  - P-01：02_quality_gate.py 的 MAX_REJECT_RATE = 0.01 容忍逻辑，以及 run_local.py:292 的断言
+  - C-01、C-02、C-03：reproduce.yml、requirements.txt、dependabot.yml 的配置内容
+
+审计限制：
+  - stats.govt.nz 和 datainfoplus 被网络代理拦截，Stats NZ 方法论原文和外部链接无法核对。
+  - R 的 validate 包没能在本地运行，相关判断依据的是它的文档。
+
+
+----------------------------------------------------------------------
+ 一、总体结论
+----------------------------------------------------------------------
+
+这个项目的工程质量明显高于一般的数据分析仓库：
+  - 所有头条数字都能从原始数据复现，committed 输出与独立重算 0 差异。
+  - CI 的 CSV 门禁确实能失败，实测过删除、新增、CRLF 三种情况。
+  - action 全部按完整 SHA 锁定；workflow 权限默认只读。
+  - R 的负向测试质量高，变异体杀死率 16/19。
+  - PySpark 端口的本地比对能真实通过。
+
+没有发现计算错误，也没有"严重"级别的问题。问题集中在四个方面：
+
+ 1. 解读比证据说得更强（S-01 至 S-05）
+    - 头条"三个地区占一半以上的下降"没有和"这三个地区原本就有一半的羊"做对照。
+    - 2012 年以前的缺行被读成了"没有任何扣留"。
+    - 前三名单、数字精度、"奶牛是否替代羊"这几处的措辞都超出了证据能支撑的范围。
+
+ 2. 文档漂移，自我声明与事实不符（D-01 至 D-06、R-04、L-01）
+    - README 手抄的内容已经和报告、CHANGELOG 不同步。
+    - "数字全部内联计算"、"所有主张都有来源"、"哈希对照 SOURCE.md 校验"这三条声明都不属实。
+    - AI 使用说明的链接已经失效。
+    - Databricks 截图展示的是修复前的错误输出。
+    - 唯一可引用的 v0.2.0 已经包含后来更正过的内容。
+
+ 3. 静默失败的路径（R-01 至 R-05、P-01 至 P-03）
+    - 当前数据上结果都对，但下次换数据或改代码时，有好几处会"不报错、给错数"。
+    - 其中最严重的是 P-01：PySpark 端口遇到比例低于 1% 的坏行时，会静默改掉头条结论。
+
+ 4. 发布链路与供应链（C-01 至 C-03）
+    - 发布 job 持有写权限，同时运行未锁版本的代码。
+    - Quarto、runner 镜像和 Python 传递依赖的版本都在浮动。
+    - gh-pages 分支和 tag 都没有保护。
+
+问题统计（合并去重后）：
+    高 4 项 | 中 19 项 | 低 39 项 | 建议 7 项 | 合计 69 项
+
+
+----------------------------------------------------------------------
+ 二、建议的修复顺序（优先级清单）
+----------------------------------------------------------------------
+
+  1. S-01  头条旁边补上基数对照（占 2002 年基数的比例、降幅、超出比例的百分点）
+  2. S-02  把"缺行"作为第三类画进图里，改掉 "Nothing is withheld from 2002 to 2011"
+  3. P-01  PySpark 端口只要有阻断性坏行就直接失败，与 R 对齐
+  4. D-01  修复失效的 AI 使用说明链接，改正 trailer 相关表述
+  5. D-02  README 的 S 标记和普查年表述与 index.qmd 同步
+  6. S-03  前三名单写成"Otago 与 Manawatū-Whanganui 几乎并列"
+  7. L-01  发布 v0.3.0，同步 CITATION.cff、DESCRIPTION 和报告日期
+  8. L-02  CC BY 4.0 署名补上许可证链接和"已修改"声明
+  9. C-01  Pages 改成 artifact 部署；保护 gh-pages 和 tag
+ 10. R-01、R-02、R-03  补上三个 R 守卫及其测试
+ 11. C-02、C-03  锁定 Quarto 和 runner 版本；Python 依赖生成带哈希的锁文件
+ 12. D-03、D-18  手写数字改成内联计算；CI 自动核对 README 中的数字
+
+
+======================================================================
+ 三、数据与统计方法（S）
+======================================================================
+
+S-01【高】头条"三个地区占一半以上的下降"没有按基数归一化
+  位置：README.md:3, 11；index.qmd:192-194、271（图 1 标题）、907
+  问题：这三个地区 2002 年本来就持有可测羊群的一半。如果各地按同一比例下降，
+        它们自然也会占下降的一半左右。头条实际上主要反映的是地区规模。
+  证据（主会话已复核）：
+        地区                 占2002基数  占下降    本地降幅
+        Canterbury           19.8%      22.0%     46.0%
+        Southland            15.2%      17.9%     48.8%
+        Otago                15.6%      14.0%     37.1%  <- 占下降低于占基数
+        Manawatū-Whanganui   16.7%      13.9%     34.3%
+    - 前三合计：占基数 50.6%，占下降 54.0%，只高出 3.4 个百分点。
+    - 可测地区整体降幅 41.3%。
+    - 按降幅排，最大的是 Northland 66.6%、Marlborough 52.3%、Waikato 49.3%、Southland 48.8%。
+  影响：标题 "Where New Zealand's sheep went" 加上"三地占一半以上"，会让读者以为下降
+        集中在这三地。这是整份报告的核心结论，却没有最基本的基准对照。
+  解决方法：在 sheep_change 中增加三列，并在头条旁写明对照：
+        sheep_change <- sheep_change |>
+          mutate(base_share = 100 * y2002 / sum(y2002[!is.na(change)]),
+                 fall_share = 100 * change / decline_sum,
+                 excess_pp  = fall_share - base_share)
+    - 头条可改写为："三地在 2002 年持有 50.6% 的羊，占下降的 54%；
+      下降大体与规模成比例，只有 Canterbury 和 Southland 略超比例。"
+    - 图 1 可以加一组"占基数"的对照点或参考线。
+  来源：数据 agent
+
+S-02【高】2012 年前的缺行就是未公布的数据，报告却说"2002–2011 没有扣留"
+  位置：index.qmd:561-563（图 3 的 alt 文本 "Nothing is withheld from 2002 to 2011"）、
+        568-592（抑制率图 2002–2011 显示为 0%）、626-633；README.md:50；
+        R/checks.R:22-29（census_year_reported）
+  证据：
+    - 原始 CSV 每年行数（主会话已复核）：2002–2011 为 560–810 行，2012 起恒为
+      880 行（44 个代码 × 20 个地区）。文件从 2012 年起才是完整矩形。
+    - 2012 年以前没有一个显式的 0 值单元格。早年的导出同时省略了零值和扣留值。
+    - 2012 年被标 C 的 51 个单元格，全部在 2012 年前至少有一年缺行（平均缺 8.2/10 年）。
+    - 缺行年份的调和残差明显不为 0，数字就在项目自己的 outputs/reconciliation.csv 里：
+      2003 年羊（缺 Nelson、Chatham）143,694；2006 年羊 100,653；
+      2008 年羊（缺 Tasman）320,299；2002 年奶牛 1,789。
+    - Chatham 的奶牛缺行其实是 0：2013 年后显式为 0，2007 年奶牛缺 Chatham 时残差恰为 0。
+  影响：
+    - 抑制率时间趋势图，以及"2012 峰值是 C 而不是质量问题"的叙事，把导出格式的
+      变化当成了扣留行为的变化。
+    - "cannot be determined from the extract"与项目自己的残差数据相矛盾。
+    - census_year_reported 看不到缺行（2002 年普查的 Nelson 奶牛约 1,789 头也属于
+      "普查年扣留"），所以"9 次"偏低。
+    - 奶牛窗口把 Chatham 当成不可测。如果按 0 计，2002–2025 的结果应为 7/14（待确认）。
+  解决方法：
+    - 补全网格，把"未出现在导出中"作为第三类画进图 3：
+        grid <- regions |>
+          tidyr::complete(year, tidyr::nesting(area_code, region), livestock_class,
+                          fill = list(suppressed = FALSE)) |>
+          mutate(absent = is.na(head) & !suppressed)
+    - alt 文本改为 "No cell carries a suppression flag from 2002 to 2011; rows are
+      absent from the export in those years instead."
+    - README.md:50 相应改写；在 census_year_reported 旁注明它不覆盖缺行。
+  来源：数据 agent（文档 agent 独立指出 alt 文本比正文说得更确定）
+
+S-03【中】前三名单不稳健：Otago 与 Manawatū-Whanganui 只差 1.6 万头
+  位置：README.md:11、83；index.qmd:192、765-768
+  证据：
+    - Otago 下降 2,270,557 头，Manawatū-Whanganui（MW）下降 2,254,586 头，差 15,971 头。
+      这个差距只有 Otago 2025 年存栏的 0.41%，而 Otago 仅 2024→2025 一年就降了 209,536 头。
+    - 起点固定为 2002 年、终点换成 2018–2024 中任一年时，第三名都是 MW。
+    - 设计匹配窗口（2002–2022）的前三是 Canterbury、Southland、MW，占 55.6%。
+      README 只写了"the same qualitative answer"，没提名单变了。
+  影响：头条点名的地区组合，在统计上与另一组合无法区分；点名 Otago 属于过度精确。
+  解决方法：
+    - 头条写成"Canterbury 和 Southland，其后 Otago 与 Manawatū-Whanganui 几乎并列
+      （2.27M vs 2.25M）"。
+    - README.md:83 改为 "...the top three (Canterbury, Southland, Manawatū-Whanganui)
+      at 55.6 percent: still over half, though Otago drops to fourth."
+    - 明确写出：份额是稳健的，名单不稳健。
+  来源：数据 agent、文档 agent
+
+S-04【中】没有任何不确定性量化，头条数字精度虚高
+  位置：README.md:3、11（16.32M、53.6%、0.77%）；index.qmd:187-188、208-211
+  证据：
+    - 报告自己引用的 2025 年全国羊只相对抽样误差为 3%，换算成半宽约 ±0.7M 头。
+    - 写成两位小数的 "16.32 million" 暗示精度约 ±5 千头，比置信区间窄约 140 倍。
+    - 地区层面的抽样误差通常更大，但没有报告。
+    - 敏感性分析中 West Coast 的"增长"来自噪声很大的 2025 端点：
+      2023 年 15,339 → 2024 年 28,534 → 2025 年 52,542。
+  影响：读者会把点估计当成精确值。
+  解决方法：
+    - 头条改为"约 16.3 million（按 Stats NZ 的 3% 抽样误差，约 ±0.7M）"。
+    - 至少写一句"未量化不确定性；名次差距小于 X 时不作区分"。
+    - 有条件的话，按地区抽样误差对前三份额做 Monte Carlo 区间。
+  待确认：30% hot-deck 插补是否会让变化量偏向持平，需要看 Stats NZ 方法文档。
+  来源：数据 agent
+
+S-05【中】"奶牛是否替代了羊"：图表的暗示与报告自己的免责声明矛盾
+  位置：index.qmd:213-235、292-327、328-377（图 2，标题在 361）、379-392（"per 100
+        sheep lost" 表）；README.md:12-13
+  证据：
+    - 正文说 "A dairy cow and a sheep are not exchangeable units"，也说是否在饲料意义上
+      替代"cannot be settled from head counts"。
+    - 但图 2 标题 "Where sheep left, cattle mostly did not arrive in comparable numbers"
+      和"每失去 100 只羊增加多少头牛"的表格，都在引导读者用头数去否定替代。
+    - 图 2 只画了 2002→2025 这一个端点窗口，而报告自己说端点净值 "hides the shape of
+      the series"。三窗口结论没有任何图支撑。
+    - 图 2 的 alt 文本先说 "cattle markers sit close to zero"，下一句又说 "Canterbury has
+      the largest dairy gain at about 795 thousand"，前后矛盾。
+    - 图 2 中 Otago 的方块和三角重叠；连接三类的灰线含义不清。
+    - "Did dairy replace the sheep?" 这一节没有给出直接答案。316 行的 "The conclusion
+      above" 找不到它指的是哪个结论。
+  解决方法：
+    - 图 2 标题改为中性描述，例如 "Change in head counts, 2002–2025, five largest sheep
+      declines (head counts are not feed-equivalent)"。
+    - 新增一张全国时间序列小多图：羊、奶牛各一个面板，用独立 y 轴或 2002=100 的指数，
+      不用双轴，标出 2014 年和普查年。
+    - 该节第一句直接回答问题，例如 "In head counts, only Canterbury (and to a lesser
+      extent Southland) added dairy cattle on anything like the scale of their sheep
+      losses; nationally, dairy grew until 2014 and has fallen since. Whether dairy
+      replaced sheep in feed or land terms cannot be answered from this table."
+    - 修正 alt 文本；去掉灰线，或改成从 0 画起的短线段。
+  来源：数据 agent、文档 agent
+
+S-06【低】2014 分割点是样本内峰值；三个窗口用的地区集合也不同
+  位置：index.qmd:69-91、200-204、220-227；README.md:13
+  证据：
+    - 2014 年正好是全国奶牛的样本内最大值（6,698,326）。2016 年为 6,618,800，与峰值只差约 1.2%。
+    - 在峰值处切分，按构造就会让"前段上升、后段下降"的对比最大化。
+    - 三个窗口排除的地区各不相同：
+        2002–2025 排除 Auckland、Wellington、Nelson、Chatham
+        2002–2014 排除 Nelson、Chatham
+        2014–2025 排除 Auckland、Wellington、Nelson
+  影响："方向取决于窗口"这个结论，部分是切分方式造成的；4/15 与 12/14 比较的不是同一批地区。
+  解决方法：注明 2014 是事后选定的峰值；在共同地区集合上重算三个窗口的计数，至少附一列。
+  来源：数据 agent
+
+S-07【低】"普查年较低，是因为去掉了抽样误差分支"：样本太小，撑不起因果论断
+  位置：index.qmd:614-622；README.md:48
+  证据：只有 2 个普查年有 S 标记（2017 年 2 个单元格，2022 年 3 个），而调查年 2024 年同样只有 3 个。
+  解决方法："which is why" 改成 "consistent with"，并给出具体计数。
+  来源：数据 agent
+
+S-08【低】关于"输入扰动"的推理方向反了，且缺出处
+  位置：index.qmd:519-521、864-866
+  证据：
+    - 12 个"差几头"的类年全部在 2008–2016 年。
+    - 2017 年以后完整发布的两个类年，残差都是 0。
+    - 按报告自己的前提（扰动从 2017 年开始），扰动根本不可能解释这些残差。
+    - "[input perturbation] is small relative to the effects discussed here" 没有来源。
+  解决方法：
+    - 改为"所有非零残差都早于 2017 年引入扰动，因此不能归因于扰动"。
+    - 删掉关于扰动量级的无出处陈述。
+  来源：数据 agent、文档 agent
+
+S-09【低】调和残差等于变相公布了被抑制的单元格
+  位置：index.qmd:658-660（"The difference is Auckland... 219,985"）；
+        outputs/reconciliation.csv、residual-tiers.csv
+  证据：
+    - 一个类年只有一个地区被抑制时，残差就是该单元格的值（误差 ±2 头）。
+    - 2012 年奶牛的残差 1,788 = Nelson 与 Chatham 两个 C（保密）单元格之和。
+      Chatham 同期为 0，所以 Nelson 2012 年的保密值约为 1,788，可以直接推出。
+  影响：根源是 Stats NZ 没有做二次抑制，但本仓库把这个数明确打印了出来。
+  解决方法：
+    - 在方法部分注明"残差可能等于单个被抑制的单元格"。
+    - 正文不要把残差说成"就是某地区的值"。
+    - 对含 C 标记的类年，只报告分层结果，不报告精确残差。
+  来源：数据 agent
+
+S-10【低】"published 33.8 million" 没有来源，而且似乎包含一个无法确认含义的代码
+  位置：README.md:71；index.qmd:671-673；R/load.R:33-34
+  证据：
+    - 6731 + 7193 + 7077 = 33,099,289（33.1M）。
+    - 只有再加上 7699（708,627）才约等于 33.8M。
+    - 而 CHANGELOG.md:101-104 说 7699 的含义 "could not be confirmed"。
+    - 来源表中也没有 33.8M 这一项。
+  解决方法：写明 33.8M 的构成和来源页；或者改成可以由数据直接计算的对比。
+  来源：数据 agent、文档 agent
+
+S-11【低】几处措辞过度概括
+  - "Suppression now runs above ten percent of cells"（index.qmd:801-802）：
+    最近 4 年分别是 5.9%、13.7%、5.9%、11.8%，有两年低于 10%。
+    建议改为由代码计算的表述，例如 "has exceeded ten percent in N of the last M years"。
+    另外 "percent of every withheld cell" 应为 "of all withheld cells"。
+  - "By sheep alone the second smallest is West Coast"（index.qmd:813-814）：
+    只有按"已公布年份平均值"计算时才成立；2002 年和 2025 年都是 Chatham 更小。建议注明用的指标。
+  - "the years of the steepest sheep decline"（README.md:13；index.qmd:223）：
+    2002–2014 年均下降 2.34%，2014–2025 年均下降 2.23%，按比例几乎相同。
+    建议改为 "the period with the larger absolute sheep decline"。
+  来源：数据 agent、文档 agent
+
+S-12【低】地区代码映射没有在代码中验证；Chatham 在 SSGA23 里不是 regional council
+  位置：R/load.R:42-62；README.md:142；databricks/README.md:47
+  证据：
+    - 本表的 AREA 代码是数据流专用代码（10/19/20 为汇总），与 SSGA23 的 REGC 代码不同。
+    - 映射只写在注释里，没有提交 codelist，也没有测试。
+    - 合理性检查支持现有映射是正确的：Waikato 奶牛最多，Canterbury 2002 年羊最多。
+  解决方法：
+    - 提交 SDMX codelist CL_AREA_AGR_AGR_003 的快照，在 load.R 中断言代码到名称的映射。
+    - README 注明"名称拼写遵循 SSGA23，代码为本表专用"。
+  来源：数据 agent
+
+S-13【低】分母没有解释
+  位置：README.md:11、13；index.qmd:192-204
+  证据：
+    - 同一段里先说 "15 regions"，紧接着说 "7 of the 13 regions"。
+      13 是羊和奶牛两端都公布的地区：Wellington 2025 年奶牛为 s，Chatham 缺 2002 年奶牛行。
+    - "12 of 14"（2014–2025）的 14 包含 Chatham，而它两年的奶牛都是 0。
+  解决方法：
+    - 写明 "...in 7 of the 13 regions where both sheep and dairy are published at both
+      ends (Wellington's 2025 dairy value is withheld; the Chathams have no 2002 dairy row)"。
+    - 零奶牛的地区不计入分母，或加注说明。
+  来源：文档 agent
+
+S-14【建议】敏感性分析只改了起点，没改终点
+  位置：index.qmd:113-140；README.md:84
+  证据：
+    - 起点固定为 2002 年、改变终点时，前三份额为：
+      2017 年 56.2%、2018 年 59.7%、2019 年 60.1%、2020 年 56.8%、2021 年 58.6%、
+      2022 年 55.6%、2023 年 54.6%、2024 年 54.8%、2025 年 54.0%。
+    - 不同窗口的可测地区在 13 到 15 个之间变化，所以分母口径不同。
+  解决方法：
+    - 加一张"终点敏感性"表，并注明每个窗口排除了哪些地区。
+    - 图 1 增加一根"Auckland + Nelson（合计，由全国总数推算，约 124,021）"的柱，
+      让各柱加起来等于全国下降。
+  来源：数据 agent
+
+
+======================================================================
+ 四、报告、文档与可视化（D）
+======================================================================
+
+D-01【高】README 的 AI 使用说明链接已失效；关于 trailer 的陈述与提交历史不符
+  位置：README.md:148-152；.github/pull_request_template.md:13-17
+  证据（主会话已复核）：
+    - README 指向 https://github.com/Kenchch/Kenchch#how-i-use-ai-tools。
+    - 该仓库在提交 3314dc3（2026-09-09）中删掉了这一节，提交说明是 "Removed the section
+      on AI tools usage and history of commits"。现在 README 只剩 "# Feng Jiang" 和
+      "## Other projects" 两个标题。
+    - PR 模板仍写着 "This repository states its practice on the profile README"。
+    - README 说 Co-Authored-By 尾注已在 2026-09-06 从历史中移除，但 main 上仍有 5 个
+      提交带有指向 Claude 的 Co-authored-by 尾注：
+      7731581（#4，09-06）、56a71fd（#8）、c87e209（#10）、f11e78d（#11）、b12200c（#12）。
+  影响：AI 参与情况的公开披露实际上已经不存在，README 却声称存在，这是透明度层面的
+        错误陈述。对作品集项目来说，这会直接损害可信度。
+  解决方法：
+    - 把 AI 使用说明直接写进本仓库 README 的 "How this was built" 小节，3–5 行即可，并删掉外链。
+    - trailer 那句改成符合事实的表述，例如 "Trailers were removed from commits made before
+      6 September 2026; some later commits carry them"，或者直接删掉。
+    - PR 模板改为 "states its practice in README → How this was built"。
+  来源：文档 agent（主会话复核）
+
+D-02【中】README 仍保留 CHANGELOG 已经宣布更正过的说法（S 标记与普查年）
+  位置：README.md:47-48（对照 CHANGELOG.md:22-25、index.qmd:612-618）
+  证据：
+    - README 写的是 "S ... Runs from 2014 to 2025 ... Census years sit below the survey
+      years around them but not at zero"。
+    - 实际数据：
+        - S 单元格数：2014 年 1 个，2015 和 2016 年都是 0，2017 年 2 个（3.9%）。
+        - 2017 年高于 2016 年，而 2016 年是 0。
+        - 在全部 44 个代码中，S 从 2012 年就出现了（2012 年 4 个，2013 年 55 个）。
+          README 讲 C 标记时区分了"三个类别"和"全部 44 个代码"，讲 S 时却没有。
+    - CHANGELOG 明确写了 "2017 sits above 2016, which is itself at zero"，但只改了
+      index.qmd 和 alt 文本，README 没改。
+  影响：着陆页上展示着维护者自己已经承认的错误。这也说明"README 从报告手抄"的做法已经
+        产生了漂移（见 D-18）。
+  解决方法：改写为 "S ... appears in 2014, not in 2015–2016, then every year 2017–2025,
+        peaking at 17.6 percent of cells in 2021 (across all 44 codes it first appears in
+        2012). The census year 2022 sits below the survey years either side of it, and
+        2017 below every later survey year; neither is at zero."
+  来源：数据 agent、文档 agent
+
+D-03【中】"数字从不手抄"的方法声明不属实
+  位置：index.qmd:688-703（Method 6）；README.md:75
+  证据：Method 6 写的是 "Numbers that come from the data are inline expressions ... never
+        transcribed"。但 index.qmd 中至少以下由数据得出的数字或事实是手写的：
+    - 247-253：fig-cap 中的 "15 regions"；alt 中的 3.57 / 2.91 / 2.27 / 2.25 / 0.01 / "54 percent"
+    - 288、210-211、765："Auckland and Nelson"、"one more region"
+    - 331-336：alt 中的 795k / 281k / 19k
+    - 413："Four pass."
+    - 442："already fails nine times"，而同一句前面刚用内联代码输出了 9
+    - 470、473、499："17" / "seventeen"
+    - 505-507："one more than the Exact tier"
+    - 519："only two fully-published class-years"
+    - 561-567："about 8 percent"、"near 18 percent"
+    - 622-624："... are Nelson"
+    - 658："The difference is Auckland"
+    - 672："115.7 million"。它可以由数据算出（115,736,083），Method 6 却把它归入"无法计算"
+    - 801："above ten percent"（而且是错的，见 S-11）
+    - 813："21 of the 24 years"
+    - 900-901："all measurable regions declined"
+  影响：按当前数据，这些值全部核对无误；但更换数据版本后它们会静默过期，而且与方法声明自相矛盾。
+  解决方法：
+    - 能内联的都改为 `r` 表达式。fig-cap 和 fig-alt 可以写成：
+        #| fig-cap: !expr sprintf("Sheep declines across the %d regions ...", measurable)
+    - 定性论断在 setup 块里断言，例如：
+        stopifnot(all(sheep_change$change < 0, na.rm = TRUE))
+    - 确实需要手写的，改写 Method 6："Most data-derived numbers are inline expressions;
+      figure alt text and a few qualitative statements are typed and were checked against
+      outputs/*.csv on <date>"。
+  来源：文档 agent、R 代码 agent
+
+D-04【中】"无法溯源的主张一律不写"与实际存在的无出处陈述矛盾
+  位置：README.md:66；index.qmd:833-846（来源表）、740、864-866；data-raw/SOURCE.md:34-36
+  证据：
+    - "This is a common and accepted comparison — Stats NZ publishes the series as one"（740）没有出处。
+    - 关于扰动量级的陈述没有出处（见 S-08）。
+    - "33.8 million" 没有出处（见 S-10）。
+    - SOURCE.md 里 2024 年的期望值（23,583,001 等）没有注明取自哪个发布页。
+    - 来源表列了 "Tier 1 statistics"，正文却从未使用，是孤儿条目。
+    - 来源表第一行把约 17 条陈述塞进一个单元格，难以核对。
+  解决方法：
+    - 删除或改写无法溯源的句子。
+    - 来源表拆成每条陈述一行，删掉 Tier 1。
+    - SOURCE.md 为 2024 年的期望值补上来源 URL。
+  来源：文档 agent
+
+D-05【中】README 过长，受众混杂，术语未定义，结构错位
+  位置：README.md 全文（162 行）
+  证据：
+    - Key findings 只有 5 行，Data quality checks 约 40 行。
+    - 调查发现、验证工程、CRLF 故事（在 index.qmd 里又讲了一遍）、Databricks 移植、
+      AI 说明全都混在一起。
+    - census_year_reported 在第 27 行和第 29 行连续解释了两次。
+    - 以下术语都没有定义：class-year（3 类 × 24 年 = 72）、tier、Exact、endpoint、
+      measurable region、withheld、falsified、residual、OBS_STATUS。
+    - 质量规则只列了代码名，没说每条检查什么。
+    - "### Coverage and comparison windows" 被错放在 "## How this was built"（AI 说明）之下。
+  解决方法：建议 README 的结构为：
+      1. 标题 + 一句结论 + 报告链接 + 图 1
+      2. Key findings（3 条，每条 1 个数，用平实语言）
+      3. Caveats（3 条：只看头数；普查 vs 抽样；有 2 个地区被扣留）
+      4. Data & licence
+      5. How the numbers are checked（5 行摘要，细节链接到报告）
+      6. Reproduce
+      7. Repository layout
+      8. Databricks port
+      9. How this was built
+    术语在首次出现时定义；把 tier 和 flag 的细节移到报告里。
+  来源：文档 agent
+
+D-06【中】Databricks 截图陈旧，展示的是修复前的错误输出
+  位置：databricks/screenshots/dashboard.png、job-run-*.png；databricks/README.md:55-59、90
+  证据：
+    - dashboard 里 "Sheep Suppression Rate by Year" 的折线只从 2017 年开始。
+      PR #15 的提交说明原话是 "which is why the dashboard's suppression line starts at
+      2017"，即截图正是那个 null bug 的产物。
+    - 截图的单位是百分比，而现在的 gold_coverage 返回的是小数。
+    - y 轴从 5 起截断，2022–2024 年的 5.9% 看上去像贴着底。
+    - "Sheep Decline by Region" 按字母排序，违背报告自己主张的"排序条形图"原则。
+    - 截图拍摄日期是 2026-09-20，早于 CHANGELOG 里 Unreleased 的修复。
+    - 截图的工作区路径中能看到部分个人邮箱和 Job ID。
+  影响：读者会把截图当成"当前流水线能在 Databricks 上运行"的证据，但它展示的恰恰是有
+        bug 的输出。仓库中也没有任何证据表明当前版本的 notebook 在 serverless 上跑过。
+  解决方法：
+    - 用当前代码在 serverless 上重跑，重新截图：y 轴从 0 开始，条形按降幅排序，
+      折线覆盖 2002–2025，小数格式化为百分比。截图前裁掉邮箱和路径。
+    - 如果暂时做不到，就在 README 里注明截图对应的 commit，并说明已知差异。
+  来源：文档 agent、PySpark agent、CI agent
+
+D-07【低】"all three are reported below"说的窗口与下方表格不一致
+  位置：index.qmd:200-204、294-306；README.md:13
+  证据（主会话已复核）：
+    - Key findings 说的三个窗口是 2002–2025、2002–2014、2014–2025，内容是"X 个地区中
+      奶牛下降了几个"的计数。
+    - 下方 "Three endpoint windows" 表格（来自 R/checks.R:111 的 dairy_windows）却是
+      2002–2014、2014–2025、2002–2022，而且是全国总量，不是地区计数。
+    - README 同样链接到 #three-endpoint-windows。
+  解决方法：在该节补一张"三个窗口的地区计数"表；或者把 Key findings 的措辞改成与表格一致。
+  来源：R 代码 agent（主会话复核）
+
+D-08【低】10 张表都没有表题（可访问性问题）
+  位置：index.qmd:297、382、409、429、453、484、538、648、748、883
+  证据：这些表有 tbl- 标签但没有 tbl-cap，渲染后的 HTML 带 quarto-uncaptioned 类，页面上
+        只显示孤零零的 "Table N"。
+  解决方法：每张表加上 `#| tbl-cap: "..."`。
+  来源：文档 agent
+
+D-09【低】图 3 的设计问题
+  位置：index.qmd:561-578
+  证据：
+    - alt 文本比正文说得更确定（见 S-02）。
+    - 标题 "Two different flags, two different stories" 没有信息量。
+    - x 轴刻度是 2002、2005 ... 2023，没有峰值年 2021 和终点 2025，也没有标出普查年，
+      而正文正是在比较普查年。
+    - y 轴写 "suppressed"，副标题写 "withheld"。
+    - 2003–2011 年的分母只有 44–50 个单元格（因为有缺行），图中没有说明。
+  解决方法：
+    - 标题改为 "Confidentiality flags stop in 2012; quality suppression starts in 2014
+      and peaks in 2021"。
+    - 设置 breaks = c(2002, 2007, 2012, 2017, 2022, 2025)，并用浅色背景标出普查年。
+    - 统一使用 "withheld"。
+  来源：文档 agent
+
+D-10【低】图 1 的细节
+  位置：index.qmd:260-267
+  证据：
+    - 注释框 "account for 54% of the fall" 丢掉了 "measurable regional" 这个限定，
+      而 CHANGELOG 明确修正过这一点。
+    - 前三名的条形与其余同色。
+    - 注释框放在 Taranaki 和 Bay of Plenty 之间，离它描述的三根条很远。
+    - PNG 单独传播时，看不出 Auckland 和 Nelson 被排除了。
+  解决方法：
+    - 前三名用深色，其余用灰色。
+    - 注释改为 "...54% of the fall across these 15 regions"，并放在前三名旁边。
+    - caption 加上 "Auckland and Nelson not shown: 2025 value withheld"。
+  来源：文档 agent
+
+D-11【低】表格格式
+  证据：
+    - 表 2 的行序既不是按降幅，也和图 2 不同（index.qmd:383-391），加 arrange() 即可。
+    - 表 3 直接显示 "rule items passes fails nNA"，nNA 没有解释（410）。
+    - 表 5 的 "Residual %" 出现 "-0.000"（465），应显示为 "<0.001"。
+    - 表 1 中 "Change (head)" 的正数不带 "+"，同表的 "Change (%)" 却带（303-304）。
+  来源：文档 agent
+
+D-12【低】报告和文档中关于复现与 CI 的描述已经过时
+  证据：
+    - index.qmd:971 写 "`data-raw` is now marked `-text`"，而 .gitattributes 已收窄为
+      data-raw/*.csv -text（见 CHANGELOG.md:43-45）。
+    - index.qmd:962 写 "on every push"，实际只在 PR 和推送到 main 时运行；而且 CI 是
+      三个 job，publish job 会重新渲染一次。
+    - 报告的复现步骤只列了 2 条命令，README 列了 5 条（含 renv::restore() 和测试）。
+    - databricks/README.md:68 写 "See reproduce.yml for the exact dependency versions"，
+      而版本早已移到 requirements.txt。
+    - databricks/run_local.py:24 的 docstring 写的是 `pip install pyspark pandas`，没有锁版本。
+  解决方法：同步这些措辞；报告里直接引用或链接 README 的命令块；docstring 改为
+        `pip install -r databricks/requirements.txt`。
+  来源：文档 agent、数据 agent、CI agent
+
+D-13【低】自相矛盾或防御性的措辞
+  证据：
+    - index.qmd:190 "Three points, each with one number."，但第二条有 4 个数、第三条有 6 个数。
+    - Method 6 末尾 "...including the version of this rule that claimed every number on
+      the page was computed, which was itself false" 是自指的变更史，放在报告里令人困惑，
+      应移到 CHANGELOG。
+    - "Independent recomputation"（index.qmd:641-660）并不独立：published 值和区域合计
+      来自同一个文件，而且表 8 与表 5 的 2024 年那一行完全相同。建议改名为
+      "Worked example: 2024"，或者删掉。
+  来源：文档 agent
+
+D-14【低】术语和单位不一致
+  证据：
+    - withheld、suppressed、confidential 混用。
+    - SOURCE.md 写 s (suppressed) / c (confidential)，报告写 S quality suppression /
+      C confidentiality。
+    - index.qmd:315 用 "lc6731"，其他地方用裸数字 "6731"。
+    - head、cattle、animals 混用。
+    - README 第 12 行一句话里同时出现 "588 thousand" 和 "1.54 million"。
+    - 16.32M 和 16.3M 只隔两段。
+    - 图 1 用百万，图 2 用千。
+  解决方法：在术语表里定义一次，全文统一；同一段内统一数量级；两张图都用百万头。
+  来源：文档 agent
+
+D-15【低】README 中两张图的 alt 文本只是标题；databricks/README 缺少限定语
+  位置：README.md:7、54；databricks/README.md:78
+  证据：
+    - README 两张图的 alt 文本只有一句标题，没有像报告那样描述数据。
+    - databricks/README 写 "Top 3 share of fall | 54.0%"，缺少 CHANGELOG 已经加上的
+      "measurable regional" 限定。
+  解决方法：README 复用 index.qmd 的 fig-alt；databricks/README 改为 "Top 3 share of
+        measurable regional fall"。
+  来源：文档 agent
+
+D-16【低】CHANGELOG 格式
+  证据：
+    - 没有声明遵循 Keep a Changelog 或 SemVer，没有 Added/Changed/Fixed 分类，没有 PR 链接。
+    - Unreleased 里 #15、#16、#17 三批改动只靠空行分隔。
+    - 读者关心的"结论更正"和内部工程细节混在一起。
+  解决方法：采用 Keep a Changelog 格式，把 "Corrections to published findings" 单列为第一类。
+  来源：文档 agent
+
+D-17【建议】导航、标题与可访问性
+  - 渲染后的 HTML：lang="en"，标题层级正确，三张图都有 alt。这些都已确认没问题。
+  - _quarto.yml:20 的 toc-depth: 2，导致 "Three endpoint windows"、"How much does the
+    start year matter?" 等关键 h3 不在目录里，建议改成 3。
+  - lang 可以设为 en-NZ。
+  - 末尾约 40 行 sessionInfo() 建议折叠。
+  - 标题 "Where New Zealand's sheep went" 会让读者期待讲"羊去了哪里、被什么取代"，
+    而报告明确说这一点无法判断。可以考虑改为 "Where New Zealand lost its sheep"。
+  来源：文档 agent
+
+D-18【建议】从机制上防止 README 漂移（D-02 和 D-03 的根本原因）
+  - 渲染时输出 outputs/key-figures.csv，CI 用脚本核对 README 中的数字；或者改由
+    README.qmd（format: gfm）生成 README。
+  - PR 模板加一项："If a number or claim in index.qmd changed, were README, CHANGELOG
+    and alt text updated?"
+  来源：文档 agent
+
+
+======================================================================
+ 五、R 代码与测试（R）
+======================================================================
+说明：以下问题在当前这份钉住的数据上都不会产出错误结果，但下次换数据或改代码时，
+可能"不报错、给错数"。
+
+R-01【中】OBS_VALUE 的校验太宽：十六进制、小数、负数、科学计数法都能静默通过
+  位置：R/load.R:137-144
+  证据：
+        mutate(head = suppressWarnings(as.numeric(obs_value)))
+        if (any(!is.na(selected$obs_value) & !is.finite(selected$head))) stop(...)
+    实测 load_livestock() 能接受 "0x1A"（变成 26）、"1.5"、"-5"、"1e3"（变成 1000）。
+    负数之后会被 validate 规则拦下，但小数头数和十六进制在整条流水线里都没有检查。
+    PySpark 端口同样会接受 "4192693.5"。
+  解决方法：头数应当是非负整数，改成先检查原始字符串（已验证现有测试全部仍然通过）：
+        bad <- !is.na(selected$obs_value) &
+               (!grepl("^[0-9]+$", selected$obs_value) | !is.finite(selected$head))
+        if (any(bad)) stop("Selected series contains a non-integer OBS_VALUE: ",
+                           paste(utils::head(unique(selected$obs_value[bad]), 5),
+                                 collapse = ", "), call. = FALSE)
+    同时补测试：for (value in c("0x1A", "1.5", "-5", "1e3")) ...
+    PySpark 端口也增加规则 F.col("head") == F.floor("head")，通过后 cast 成 bigint。
+  来源：R 代码 agent、PySpark agent
+
+R-02【中】"国家总量被抑制"的守卫没有测试；一旦失效，结果会被静默贴错标签（R 与 Spark 都是如此）
+  位置：R/load.R:182-192；tests/test-r-contracts.R:58-65；R/checks.R:134-141；
+        databricks/02_quality_gate.py；databricks/03_analysis.py:77、85-91
+  证据：
+    - 变异测试：把 `nrow(out |> filter(area_code == "20", is.na(head)))` 换成 FALSE，
+      测试全部通过，变异体存活。
+    - `nrow(national_cells)` 是死代码：第 178-181 行的全局重复检查会先 stop。
+    - 岛屿总量有"被抑制"的测试，国家总量没有。
+    - checks.R 没给 published 加 na.rm，理由是 "load.R enforces that"。
+      但 sum(numeric(0)) 本身就返回 0，注释的论证并不完整。
+    - 如果守卫失效：published = NA，case_when 把 NA 条件当作 FALSE，
+      该类年被归入 "Fully published, off by a few head"，这是静默的错误标签。
+    - PySpark 端口的同类守卫（变异 M3）同样没有测试。
+      此外 Spark 里 sum(null) 返回 NULL，而 R 的 sum(na.rm=TRUE) 返回 0，语义不同。
+  解决方法：
+    - 补测试（已验证能杀死上面的变异体）：
+        raw <- raw_fixture
+        raw$obs_value[national_row]  <- NA_character_
+        raw$obs_status[national_row] <- "s"
+        expect_error(load_fixture(raw), "published national total")
+    - 删掉死分支。
+    - checks.R 中改为显式断言：
+        published = { p <- head[area_code == "20"]; stopifnot(length(p) == 1L, !is.na(p)); p }
+    - Spark 的 tier 逻辑先判断 published 是否为 NULL，
+      例如 F.when(F.col("published").isNull(), "Missing national total")。
+  来源：R 代码 agent、PySpark agent
+
+R-03【中】某个类年一行区域数据都没有时，residual_tiers 会静默少一行
+  位置：R/checks.R:162-179
+  证据：group_by 对没有行的组不产出结果。coverage 有网格检查，但只覆盖 Sheep。
+        实测删掉 2016 年 Beef cattle 的全部区域行后：
+    - 没有任何报错；
+    - residual_tiers 从 72 行变成 71 行；
+    - reconciliation 中该类年 region_sum = 0，residual_pct = 100。
+    报告里 "In X of the Y class-years" 的分母会静默变小。
+  解决方法：以 reconciliation 为左表做连接，或者加断言：
+        stopifnot("residual_tiers must cover every class-year" =
+                  nrow(residual_tiers) == length(EXPECTED_YEARS) * length(LIVESTOCK))
+  来源：R 代码 agent
+
+R-04【中】哈希有三份手抄副本，没有任何检查保证一致；文档说"对照 SOURCE.md 校验"并不属实
+  位置：R/load.R:17-19；databricks/01_ingest_and_pin.py:25；data-raw/SOURCE.md:14；
+        index.qmd:951-952、958-959；README.md:104
+  证据：
+    - load.R 的报错信息写的是 "does not match the hash recorded in SOURCE.md"，但代码
+      比对的是硬编码常量 EXPECTED_SHA256，从不读取 SOURCE.md。
+    - index.qmd 写的是 "If the extract were ever replaced without SOURCE.md being
+      updated, R/load.R stops"，与代码行为不符。
+    - 三份哈希目前是一致的。
+  影响：换 extract 时如果只改了其中两份，CI 仍然是绿的，SOURCE.md 的来源记录会静默失真。
+  解决方法：在测试或 CI 中断言三处一致：
+        - name: Every recorded copy of the extract hash agrees
+          run: |
+            h=$(sha256sum data-raw/agr_agr_003_2026-09-04.csv | cut -d' ' -f1)
+            grep -q "$h" data-raw/SOURCE.md
+            grep -q "EXPECTED_SHA256 <- \"$h\"" R/load.R
+            grep -q "\"$h\"" databricks/01_ingest_and_pin.py
+    或者让 load.R 直接从 SOURCE.md 解析哈希。
+  来源：R 代码 agent、CI agent
+
+R-05【中】年份在代码里写死了几十处，下次发布数据要逐处手改
+  位置：
+    - index.qmd:27、30、39-40、46-49、56-59、90-100、113、138、151、572
+      （c(2002, 2025)、y2025、LAST_START <- 2025 - MIN_WINDOW、limits = c(2001, 2026)）
+    - R/checks.R:111-112、125（== 9L）
+    - R/load.R:80、168（错误信息里写死了 "2002 to 2025"）
+  影响：2026 年数据发布后，改了 EXPECTED_YEARS 却漏掉某一处 2025，报告就会出现一部分
+        数字用新终点、个别图表或正文仍停在 2025 的情况。2027 年的普查也要手动加进
+        CENSUS_YEARS。
+  解决方法：
+        # R/load.R
+        START_YEAR <- 2002L; END_YEAR <- 2025L
+        EXPECTED_YEARS <- START_YEAR:END_YEAR
+        # index.qmd
+        yS <- paste0("y", START_YEAR); yE <- paste0("y", END_YEAR)
+        mutate(change = .data[[yE]] - .data[[yS]])
+        LAST_START <- END_YEAR - MIN_WINDOW
+    "== 9L" 改为 length(windows) * length(LIVESTOCK)。
+  来源：R 代码 agent
+
+R-06【低】checks.R 与 index.qmd 重复实现同一计算
+  证据：
+    - index.qmd:94-101 与 R/checks.R:111-124（dairy_windows）。
+    - index.qmd:26-36 的 top3_share 与 113-131 的 top3_for(2002)，两者结果都是 53.98386。
+    - index.qmd:65-67 与 dairy_window_counts(2002, 2025)。
+    - index.qmd:209 和 904 用两种写法算同一个 gap。
+    - index.qmd:919 把 in_top3() 的逻辑又手写了一遍。
+    - checks.R:91 和 173 两次写 length(setdiff(names(AREA), AREA_AGGREGATES))。
+  解决方法：在 load.R 定义 N_REGIONS；index.qmd 直接取 checks.R 的结果，不要重算。
+  来源：R 代码 agent
+
+R-07【低】validate 汇总丢掉了 error 和 warning 列，也没有断言 nNA
+  位置：R/checks.R:32-33、68-74
+  证据：validate 默认 raise = "none"。规则求值出错时记为 error = TRUE、fails = 0，
+        页面上会显示成 "0 fails"。损坏副本的差值断言能间接兜住，但真实数据那一侧兜不住。
+        （validate 没能在本地运行，这条依据的是它的文档。）
+  解决方法：
+        s <- summary(confront(livestock, rules))
+        stopifnot("a validation rule errored or warned" = !any(s$error | s$warning),
+                  "a validation rule evaluated to NA" = all(s$nNA == 0))
+  来源：R 代码 agent
+
+R-08【低】结构校验不全；错误信息会误导，也不带出问题值
+  位置：R/load.R:82-99、123、167-192；R/checks.R 中几处裸 stopifnot
+  证据（均已实测）：
+    - 把 DATAFLOW 改成 "STATSNZ:SOMETHING_ELSE(2.0)" 照样能加载；多出来的列也不会被拒绝。
+    - 删掉整个 Beef 类，或 Sheep 代码带了前导零，报错都是 "A published national total is
+      required exactly once per class-year"。
+    - 多出一个 2026 年时，报错是 "does not contain every year"。
+    - 重复单元格和未映射代码的报错都不打印具体的 key。
+    - checks.R 的 stopifnot 失败时只输出 "identical(...) is not TRUE"。
+  解决方法：
+        stopifnot(all(raw$dataflow == "STATSNZ:AGR_AGR_003(1.0)"))
+        extra <- setdiff(names(raw), c("dataflow", required))
+        if (length(extra)) stop("Unexpected column(s): ", toString(extra), call. = FALSE)
+        absent <- setdiff(names(LIVESTOCK), unique(raw$livestock_agr_agr_003))
+        if (length(absent)) stop("Extract lacks livestock code(s): ", toString(absent), call. = FALSE)
+    stopifnot 改用命名参数的写法，让报错信息可读。
+  来源：R 代码 agent
+
+R-09【低】ISLAND_OF 是按位置与 AREA 对齐的
+  位置：R/load.R:72-74
+  证据：ISLAND_OF <- c(rep("North Island", 9), NA, rep("South Island", 8), NA, NA)
+  影响：AREA 只要重排或增删一项，岛屿归属就会静默错位。
+  解决方法：按代码值生成，并断言 identical(names(ISLAND_OF), names(AREA))。
+  来源：R 代码 agent
+
+R-10【低】all_suppression_years() 会重复读文件、重复算哈希；年份不校验；包含 1994 年
+  位置：R/load.R:211-218（由 index.qmd:177 调用）
+  证据：
+    - 非法年份经 as.integer 变成 NA，再被 sort() 静默丢掉。
+    - 1994 年不在分析窗口内，却会进入 range(all_c_years)。
+  解决方法：只读一次 raw，作为参数传入；复用同一套年份校验，并过滤掉 2002 年以前的年份。
+  来源：R 代码 agent
+
+R-11【低】fmt() 会吞掉末尾的 0，大数带小数时会被截成 7 位有效数字
+  位置：index.qmd:23
+  证据：fmt(2.5, 2) 得到 "2.5"；fmt(1234567.891, 1) 得到 "1,234,568"。
+  解决方法：
+        fmt <- function(x, digits = 0)
+          formatC(round(x, digits) + 0, format = "f", digits = digits, big.mark = ",")
+  来源：R 代码 agent
+
+R-12【低】空集合时正文会渲染出 -Inf 或空串；全局关闭警告掩盖了问题
+  位置：
+    - index.qmd:511、513-515、524：max/min 作用于空向量
+    - index.qmd:105-107 + 401：lost_cattle_class 为空时，句子会以 " lost sheep" 开头
+    - index.qmd:913：列表为空时渲染成 "for ."
+    - index.qmd:121-128：下降地区少于 3 个时，top3_for 的分子会混进增长
+    - _quarto.yml：execute: warning: false
+  证据：
+    - checks.R:200-204 防了这种情况，index.qmd 没有。
+    - 全局关闭警告会吞掉 max(numeric(0)) 的警告，也会吞掉弃用警告。
+    - index.qmd:267 的 annotate(..., label.size = 0) 在 ggplot2 4.x 中可能已被
+      linewidth 取代（待确认）。
+  解决方法：
+    - 对空集合加断言，或者沿用 checks.R 的写法。
+    - 只在个别代码块关闭警告，CI 渲染时设置 options(warn = 1) 并检查日志。
+  来源：R 代码 agent
+
+R-13【低】脚本只能在仓库根目录运行
+  位置：R/load.R:15；R/checks.R:13；tests/test-r-contracts.R:1-3；.Rprofile
+  影响：在 R/ 或 tests/ 目录下运行会报 "cannot open file"。更糟的情况是 renv 没有激活，
+        用上了用户库里的包，CSV 逐字节对比随之失败。
+  解决方法：
+        if (!file.exists("renv.lock")) stop("Run from the repository root.", call. = FALSE)
+    或者用 rprojroot::find_root("DESCRIPTION") 定位根目录。
+  来源：R 代码 agent
+
+R-14【低】测试只覆盖 load.R
+  位置：tests/test-r-contracts.R
+  证据：
+    - corrupt()、top3_for()、dairy_window_counts()、in_top3()、fmt() 和 tier 逻辑都没有
+      单元测试，只能靠 CSV 对比兜底，而图和正文不参与对比。
+    - 文件头写着 "dependency-free"，实际依赖 readr、dplyr、janitor、digest。
+    - 遇到第一个失败就中止，看不到其余失败。
+    - load.R:115 的 stopifnot(nrow(raw) > 0) 是冗余代码，对应的变异体存活。
+  解决方法：把这些辅助函数挪进 R/analysis.R，改成纯函数，再用小 fixture 测试，例如：
+        stopifnot(identical(fmt(2.5, 2), "2.50"))
+  来源：R 代码 agent
+
+R-15【建议】可维护性与一致性
+  - load_livestock() 有 95 行，建议拆成纯函数 tidy_livestock(raw) 加一个薄包装。
+    测试目前靠改 environment() 注入替身，比较脆弱。
+  - 哈希检查存在 TOCTOU：先算哈希，read_csv 再读第二遍。建议用 readBin 只读一次，
+    对同一份字节算哈希并解析。
+  - 缺失值约定不对称：输入端拒绝字面量 "NA"，输出端 write_csv 却用 "NA" 表示缺失。
+  - 输出按字符型 area_code 排序（1, 10, 11, ..., 19, 2, 20, 3），建议改为 as.integer 排序。
+    注意这会改动已提交的输出和 PySpark 的比对基准。
+  - 只为把 6 个列名改成小写就引入了 janitor 及其一串依赖，可以换成
+    names(raw) <- tolower(names(raw))。
+  - checks.R:72 的期望值 c(1L,1L,1L,2L,1L) 是按位置写的，建议改成按规则名写。
+  - 五条规则中有三条在真实数据上不可能失败，因为 load.R 已经先 stop 了。报告里
+    "the zeroes are the result of rules that demonstrably fire" 应补一句说明。
+  - dairy_windows 实际包含三个类别，名字有误导。
+  - DESCRIPTION 声明 R (>= 4.1)，但 CI 只跑 R 4.6.1，这个下限从未测试过。
+  来源：R 代码 agent
+
+
+======================================================================
+ 六、PySpark / Databricks 移植（P）
+======================================================================
+实测结果：python databricks/run_local.py 在本地通过（PASS，1 分 17 秒）。silver 与
+livestock_regional.csv 的 1397 行、10 列一致；gold 各表比对通过；故障注入的各场景都通过。
+
+P-01【高】坏行进入隔离后 silver 照常发布，gold 静默改变头条结论，与 R 的行为不一致
+  位置：databricks/02_quality_gate.py:131（MAX_REJECT_RATE = 0.01）、136-156、191；
+        databricks/03_analysis.py:47-60、107-113；databricks/run_local.py:292
+  证据：
+    - 只改动 Canterbury 羊 2025 年这一个单元格，下列情况都会让这一行进入隔离：
+      重复一行、区域码改成 999、数值改成 "not-a-number"、年份改成 "2025.9"。
+    - 拒绝率只有 0.07%，远低于 1%，于是作业显示成功，silver 变成 1396 行。
+    - gold_regional_change 中 Canterbury 消失，前三从 "Canterbury 22.0 / Southland 17.9 /
+      Otago 14.0" 变成 "Southland 23.0 / Otago 18.0 / Manawatū-Whanganui 17.9"，约 59%。
+    - gold_coverage 把这个单元格算成 "Stats NZ 没有发布"。
+    - 同样的输入，R 会在 load.R:127-130、141-144、175-181 直接 stop()。
+    - run_local.py:292 断言 count() == 1392，恰好把这个行为写死了。
+  影响：报告最核心的结论会被悄悄换成另外三个地区，作业仍然是绿的。README 里
+        "Quarantine rather than delete" 的说法，在分析层实际等于删除。
+  解决方法（二选一）：
+    A. 与 R 对齐：分析用到的类别只要有阻断性失败，就拒绝发布。
+         if n_bad:
+             raise ValueError(f"{n_bad} row(s) failed blocking rules; see "
+                              f"{FQ}.quarantine_livestock. Previous silver left in place.")
+    B. 保留容忍度，但让下游知道：
+       - 被隔离的键以占位行写入 silver（quality_status='quarantined'）；
+       - coverage 单独统计 regions_quarantined；
+       - 被隔离的键落在 2002/2025 端点或汇总区域上时，直接报错。
+    两种做法都要同时修改 run_local.py:292 的断言。
+  来源：PySpark agent（主会话复核）
+
+P-02【中】run_local 没有覆盖好几条宣称存在的规则，变异测试 M1 到 M4 全部存活
+  位置：databricks/run_local.py:240-336；databricks/README.md:34-35、84
+  证据：每个变异都在一份独立的仓库副本上完整跑了一遍 run_local：
+    - M1 删掉重复单元格检测：PASS
+    - M2 删掉 census_year_reported 规则：PASS
+    - M3 跳过"国家总量被抑制"检查：PASS
+    - M4 跳过未知 OBS_STATUS 检查：PASS
+    - M5 对照组，改动 tier 规则：FAIL，被正确抓到
+  影响：项目自己在 R/checks.R:35-37 写了 "A rule that cannot fail is not evidence"，
+        移植版没有做到。R 的 validation-summary.csv 和损坏副本演示在 Spark 里都没有对应物。
+  解决方法：
+    - 补注入场景：重复行、区域码 999、国家总量被抑制、未知状态、缺列。
+    - 在 02 中把规则汇总落成一张表，并与 outputs/validation-summary.csv 的 fails 列比对
+      （census_year_reported == 9）。
+        cell = ((F.col("LIVESTOCK_AGR_AGR_003")=="6731") & (F.col("YEAR_AGR_AGR_003")=="2025")
+                & (F.col("AREA_AGR_AGR_003")=="15"))
+        write_bronze(bronze.unionByName(bronze.filter(cell)))
+        run_notebook(spark, NOTEBOOKS[1], show=False)
+        q = spark.table(f"{fq}.quarantine_livestock").collect()
+        check(len(q) == 2 and all("no_duplicate_cells" in r.broken_rules for r in q), ...)
+  来源：PySpark agent
+
+P-03【低】03 没有移植 R 的输出后置断言，coverage 会静默少掉一整年
+  位置：databricks/03_analysis.py:107-119、126-143
+  证据：从 bronze 删掉 2010 年全部 17 行区域羊数据后，02 和 03 都成功，gold_coverage 只有
+        23 行，没有 2010 年。R 会在 stopifnot(identical(sort(coverage$year),
+        EXPECTED_YEARS)) 处失败。dairy windows 的 nrow==9、!anyNA 等检查也没有移植。
+  解决方法：在 saveAsTable 之前加上：
+        got = [r.year for r in cov.select("year").collect()]
+        if sorted(got) != list(range(2002, 2026)):
+            raise ValueError(f"gold_coverage missing years: {sorted(set(range(2002,2026)) - set(got))}")
+        if dw.count() != 9 or dw.filter(F.col("change_pct").isNull()).count():
+            raise ValueError("dairy windows incomplete")
+  来源：PySpark agent
+
+P-04【低】gold 与 R 的输出并不完全对等，README 的说法过头了
+  位置：databricks/README.md:64-66；03_analysis.py:36-40、84-91、131-136；run_local.py:184-199
+  证据：
+    - README 说 "checks every silver/gold result"，但：
+      - gold_reconciliation 没有 residual_pct；
+      - 没有岛屿对账表；
+      - gold_dairy_windows 缺 start_head、end_head、start_design、end_design；
+      - 全国变化量 nat 只 display，不落表，README 的 Key results 里羊、奶牛、肉牛的变化量
+        既没有表可查，也没有测试；
+      - gold_regional_change 比对的是 pandas 重算的结果，不是 R 的输出。
+  解决方法：补上缺的列和表，把 nat 落成 gold_national_change；或者在 README 里如实写明比对范围。
+  来源：PySpark agent
+
+P-05【低】EXPECTED_REGIONS = 17 写死在代码里；常量在各 notebook 之间重复
+  位置：databricks/03_analysis.py:73；02_quality_gate.py:34-35；03_analysis.py:126
+  证据：R 在 R/checks.R:169-173 专门注释过 "Derived, not a literal 17"。
+  解决方法：
+        EXPECTED_REGIONS = spark.table(f"{FQ}.dim_area").filter(~F.col("is_aggregate")).count()
+    年份等常量集中放到 %run ./config，或者放进一张维表。
+  来源：PySpark agent
+
+P-06【低】舍入规则与 R 和 pandas 不同，而且用 == 比较舍入后的浮点数
+  位置：databricks/03_analysis.py:64、136；run_local.py:180、198
+  证据：
+    - Spark 的 F.round 是 HALF_UP，R 和 numpy 按 half-even 处理：
+      0.05 → Spark 0.1，pandas 0.0；1.45 → Spark 1.5，pandas 1.4。
+    - 当前数据离 .x5 最近的值只差 0.0014，所以测试能过，但很脆弱。
+    - gold 存的是已经舍入的值，下游求和会有偏差：前三的 share 相加是
+      22.0 + 17.9 + 14.0 = 53.9，而 README 写的是 54.0（不舍入时为 53.98）。
+  解决方法：gold 保存不舍入的值，只在展示层格式化；比较时加容差：
+        np.isclose(a, b, rtol=0, atol=1e-9)
+  来源：PySpark agent
+
+P-07【低】silver 和 quarantine 丢掉了血缘信息；一次失败后两者不再对应
+  位置：databricks/02_quality_gate.py:70-73、147-148
+  证据：
+    - silver 里没有 _source_sha256 和 _ingested_at。
+    - quarantine 在门禁失败之前就被覆盖了，而 silver 保留的是上一次成功的结果。
+  解决方法：保留这两列；增加 run_id widget，写入 silver、quarantine 和 gold。
+  来源：PySpark agent
+
+P-08【低】widget 参数没有校验；哈希"钉住"的强度比 R 弱
+  位置：databricks/01_ingest_and_pin.py:21-33、96，以及所有 saveAsTable(f"{FQ}...")
+  证据：
+    - 标识符没有加反引号，名字带 "-" 就会报语法错误，也有注入风险。
+    - source_file 可以写 "../" 跳出 volume。
+    - expected_sha256 是任务参数，可以在不留 git 记录的情况下被覆盖。
+  解决方法：
+        IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+        for k, v in {"catalog": CATALOG, "schema": SCHEMA}.items():
+            if not IDENT.fullmatch(v): raise ValueError(f"invalid {k}: {v!r}")
+        if "/" in SRC or SRC.startswith("."): raise ValueError("source_file must be a bare file name")
+        FQ = f"`{CATALOG}`.`{SCHEMA}`"
+    哈希被覆盖、与代码常量不一致时，写入 manifest 并告警。
+  来源：PySpark agent
+
+P-09【建议】其他改进
+  - 01_ingest_and_pin.py:48 用 open() 算哈希，:64-68 让 Spark 再读一次同一文件，存在
+    TOCTOU 窗口。建议写完 bronze 后再比对一次哈希，或者先复制到只读路径再读取。
+  - 02_quality_gate.py:169-173 的两项发布前校验用的是和阻断规则相同的谓词，永远不可能
+    失败。要么删掉，要么注明"纵深防御，按设计不可达"。
+  - run_local.py:107-110 在 exec 时往 globals 注入了 F。Databricks 不会预先定义 F，
+    notebook 漏写 import 时会出现本地通过、线上崩溃。
+  - spark.sql.ansi.enabled 在 Spark 4 中默认就是 true，设置它是多余的，而且没有测试 ANSI
+    关闭的情况。本地是 classic PySpark，与 serverless 的 Spark Connect 行为是否有差异，待确认。
+  - head 和各种计数全用 DOUBLE，显示成 3.9571837E7；建议校验通过后 cast("bigint")。
+  - 03 里的 ends 和 both 是多余的；check_failure_paths 函数有 96 行，建议拆分并加类型注解。
+  来源：PySpark agent
+
+
+======================================================================
+ 七、CI/CD、供应链与仓库卫生（C）
+======================================================================
+CI 健康度：
+  - main 上所有 "Reproduce analysis" 运行都是绿的。唯一一次失败是 run #1，它抓到了 CRLF 哈希
+    问题，并在同一个 PR 里修复。
+  - 没有发现 flaky 的运行。
+  - 当前 open issue 0 个；open PR 1 个（#18，Dependabot 把 pandas 升到 3.0.6，CI 是绿的）。
+
+C-01【中】发布 job 持有写权限并运行未锁版本的代码；线上页面是二次渲染；gh-pages 可以绕过门禁
+  位置：.github/workflows/reproduce.yml:130-159
+  证据：
+    - publish job 有 `permissions: contents: write`，并在同一个 job 里依次执行
+      renv::restore()（66 个包）、Rscript R/checks.R 和 quarto publish（会执行 index.qmd
+      中的 R 代码）。
+    - checkout 默认把 token 持久化在磁盘上。
+    - gh-pages 分支没有保护（protected: false）。Pages 用的是"从分支部署"模式；09-04
+      那几次部署就是作者手动推送 gh-pages 触发的，说明这条路径至今可用。
+    - workflow 注释自己写着 "quarto publish gh-pages renders the project itself, so this
+      repeats the render"。线上 HTML 来自第二次渲染，这份产物本身从未经过比对。
+  影响：
+    - 任何一个 CRAN 包、Quarto 或 action 被投毒，恶意代码都会在拿着写 token 的 job 里运行。
+      它可以篡改线上页面、移动或删除没有保护的 tag v0.1.0 和 v0.2.0，或者修改 release。
+    - "线上页面就是通过验证的那次构建产物"这个说法，严格来说不成立。
+  解决方法：
+    - 在 reproduce job 里上传已经验证过的 _site；新建 deploy job，只给 pages 和 id-token
+      两个权限，不执行任何项目代码：
+        - name: Upload the verified site
+          if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+          uses: actions/upload-pages-artifact@<full-sha>
+          with: { path: _site }
+      deploy:
+        needs: [reproduce, port]
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        runs-on: ubuntu-24.04
+        permissions: { pages: write, id-token: write }
+        environment: { name: github-pages, url: ${{ steps.deployment.outputs.page_url }} }
+        steps:
+          - id: deployment
+            uses: actions/deploy-pages@<full-sha>
+    - 把 Settings → Pages → Source 改为 "GitHub Actions"；github-pages environment 只允许
+      main 部署。
+    - 删除 gh-pages 分支，或者用 ruleset 禁止更新它。
+    - 给 v* 加 tag ruleset（禁止更新和删除），并开启 immutable releases。
+  来源：CI agent
+
+C-02【中】工具链版本浮动，而且没有定时运行
+  位置：reproduce.yml:38、97、133（runs-on: ubuntu-latest）；reproduce.yml:50、147
+        （quarto-actions/setup 没有指定 version）；README.md:89
+  证据：
+    - quarto-actions/setup 的 version 默认是 "release"：运行时从 quarto.org 查询最新版本，
+      再下载 .deb，没有校验和。本次运行装的是 1.10.18。
+    - P3M 用的是 .../noble/latest。
+    - on: 里没有 schedule。
+  影响：
+    - Quarto 一发新版，就可能让某个无关的 PR 突然变红，并阻塞发布。
+    - 线上 HTML 无法按 v0.2.0 时的工具链重建。
+    - ubuntu-latest 切换 LTS 时，系统库、字体和缓存会一起变化。
+    - 这类漂移只有在下一次无关提交时才会暴露。
+  解决方法：
+        on:
+          schedule:
+            - cron: "17 3 * * 1"   # 每周体检；publish 要求 push，不会在这里发布
+        jobs:
+          reproduce:
+            runs-on: ubuntu-24.04
+            steps:
+              - uses: quarto-dev/quarto-actions/setup@8a96df1...  # v2.2.0
+                with: { version: 1.10.18 }
+    - README 写明 Quarto 和 R 的版本要求。
+    - 如果需要连二进制也固定，把 RENV_CONFIG_REPOS_OVERRIDE 设为 P3M 的日期快照 URL。
+  来源：CI agent
+
+C-03【中】Python 依赖只锁了两个顶层包，传递依赖浮动，也没有哈希校验
+  位置：databricks/requirements.txt；reproduce.yml:111-112
+  证据：
+    - 注释写着 "Pinned, like everything else that produces a number here"，但实际只锁了
+      pyspark==4.2.0 和 pandas==2.3.3。
+    - numpy、py4j、pytz、tzdata、python-dateutil 都是开区间：本次解析出 numpy 2.4.6，
+      而 PyPI 上最新是 2.5.3。
+    - 安装时没有 --require-hashes，也不打印最终装了什么。
+  解决方法：
+        # databricks/requirements.in: pyspark==4.2.0 / pandas==2.3.3
+        pip-compile --generate-hashes -o databricks/requirements.txt databricks/requirements.in
+        python -m pip install --require-hashes -r databricks/requirements.txt
+        python -m pip freeze
+    Dependabot 能识别 pip-compile 生成的文件。
+  来源：CI agent、PySpark agent
+
+C-04【低】reproduce 和 port 两个 job 的 checkout 保留了凭据
+  位置：reproduce.yml:41-43、99
+  证据：没有设置 persist-credentials: false，PR 代码运行期间 token 一直在磁盘上。token
+        是只读的，风险低，但没有必要，而且 zizmor 会把它报为 artipacked 问题。
+  解决方法：checkout 的 with 里加 persist-credentials: false。
+  来源：CI agent
+
+C-05【低】图表和 HTML 完全没有验证；README 引用的 PNG 可能与代码脱节
+  位置：reproduce.yml:8-12、80-88；README.md:7、54
+  证据：门禁只比对 outputs/*.csv。PNG 虽然会重新渲染，但既不检查是否存在，也不上传。
+        改了绘图代码却忘了提交新 PNG 时，CI 仍然是绿的。
+  解决方法：
+        rm -f outputs/figures/*.png
+        quarto render
+        for f in 01-regional-contribution 02-substitution 03-suppression-rate; do
+          test -s "outputs/figures/$f.png"; done
+    然后用 actions/upload-artifact 上传 _site 和 figures，方便评审时查看。还可以用
+    ImageMagick 的 compare -fuzz 做带容差的比对。
+  来源：CI agent
+
+C-06【低】分支保护强度未知；main 历史曾被改写；tag 没有保护（部分待确认）
+  证据：
+    - 早期运行的 head SHA 已经不在当前 main 上，历史在 09-06 被改写过。
+    - 09-04 到 09-06 之间有多次直接推送 main；之后的改动都走了 PR。
+    - 只能看到 main 是 protected: true，是否禁止 force push、是否要求 status check 无法确认。
+  解决方法：给 main 配 ruleset：
+    - 要求 PR；
+    - 把 reproduce 和 port 设为 required status checks；
+    - 禁止 force push 和删除；
+    - 不允许 bypass。
+    再给 v* 配 tag ruleset。
+  来源：CI agent
+
+C-07【低】Dependabot 配置与仓库自己的约束相矛盾，也没有冷却期
+  位置：.github/dependabot.yml:13-17；databricks/requirements.txt:5
+  证据：
+    - requirements.txt 的注释写着 "pandas 3 is not yet fully supported by PySpark"，但
+      Dependabot 已经开了 PR #18（pandas 2.3.3 → 3.0.6），而且 CI 是绿的。
+    - 这说明要么注释过时了，要么 port 检查测不出这个问题。
+  解决方法：
+        - package-ecosystem: pip
+          directory: /databricks
+          schedule: { interval: monthly }
+          cooldown: { default-days: 7 }
+          ignore:
+            - dependency-name: pandas
+              update-types: ["version-update:semver-major"]
+    github-actions 生态也加上 cooldown。对 #18 做明确决定（合并或关闭），并同步更新注释。
+  来源：CI agent
+
+C-08【低】个人邮箱暴露
+  位置：.mailmap:4、9；分支 add-pyspark-port；databricks/screenshots/*.png
+  证据：
+    - .mailmap 明文包含两个个人邮箱（一个 gmail，一个 uclive.ac.nz）。
+    - 历史改写后 main 上已经没有使用这两个邮箱的提交，但陈旧分支 add-pyspark-port 上
+      提交 32b2752 的作者仍是个人邮箱。
+    - 截图的工作区路径中也能看到部分邮箱。
+  解决方法：
+    - 删除陈旧分支。
+    - 评估 .mailmap 是否还需要这两个地址。
+    - 开启 GitHub 的 "Block command line pushes that expose my email"。
+    - 重新截图时裁掉路径。
+  来源：CI agent、PySpark agent
+
+C-09【建议】让 .gitattributes 更稳健
+  证据：
+    - 对 extract 执行 git check-attr，结果是 text: unset、eol: lf。-text 并没有清除前面
+      *.csv 规则设置的 eol。
+    - 实测各种 autocrlf 设置下，哈希都保持不变，所以目前没有问题。
+    - 没有被规则覆盖的文件（renv.lock、DESCRIPTION、CITATION.cff 等）在
+      autocrlf=true 时会检出为 CRLF。
+  解决方法：文件顶部加 "* text=auto eol=lf"，最后一行改为 "data-raw/*.csv -text -eol"。
+  来源：CI agent
+
+C-10【建议】其他小问题
+  - reproduce.yml:43 的 fetch-depth: 0 是拆分 job 之前的遗留：注释说是给 quarto publish
+    用的，但这个 job 并不发布。删掉它，每个 PR 就不用再拉取全部历史。
+  - r-lib/actions 的 SHA 465b7d8... 实际对应 v2.13.0，注释却写 "# v2"，而 v2 现在指向
+    v2.14.0。建议注释写成精确版本。
+  - .gitignore 缺少 __pycache__/、.venv/、.Renviron、.env、spark-warehouse/、
+    metastore_db/、derby.log、index_files/；另外 .quarto/ 和 /.quarto/ 重复了。
+  - 4 个已合并的陈旧分支：add-pyspark-port、claude/nz-sheep-decline-issues-ex97en、
+    codex/audit-data-contracts、fix/audit-findings。建议开启 "Automatically delete head
+    branches"。
+  - DESCRIPTION 写 "License: MIT + file LICENSE"，按 R 包约定 LICENSE 应是两行存根。
+    这个项目不是 R 包，所以无害，但运行 R CMD check 时会报出来。
+  来源：CI agent
+
+
+======================================================================
+ 八、版本、引用与许可证（L）
+======================================================================
+
+L-01【中】唯一可引用的版本 v0.2.0 含有后来已经更正的说法；元数据与线上页面不一致
+  位置：CITATION.cff:14-15；DESCRIPTION:3；CHANGELOG.md:3（## Unreleased）；index.qmd:8
+  证据：
+    - CITATION.cff 和 DESCRIPTION 都是 0.2.0，date-released 为 2026-09-08。
+      cffconvert 校验通过，与 tag、release 一致。
+    - 但 Unreleased 下已经积累了约 20 条改动，其中多条更正了已发布的结论
+      （例如 "The report claimed 10 class-years ... there are 22"）。
+    - CITATION 的 url 指向每次推送 main 都会更新的线上页面。
+    - PR #12 的说明自己写过："anyone citing the version would have cited a number the
+      repository no longer stands behind"，现在又出现了同样的情况。
+    - index.qmd 的 date 仍为 2026-09-21。注释写着 "Bump this when the analysis is
+      materially revised"，但 #16 和 #17（09-22）都改了结论。
+  解决方法：
+    - 发布 v0.3.0，把 Unreleased 移到这个版本下；同步 CITATION.cff、DESCRIPTION 和
+      index.qmd 的日期；打 tag，建 Release。
+    - 两次发布之间，DESCRIPTION 用 0.2.0.9000 这样的开发版本号。
+    - 线上页的 subtitle 或 footer 显示版本号。
+    - CI 加一致性检查：
+        test "$(sed -n 's/^Version: //p' DESCRIPTION)" = "$(sed -n 's/^version: //p' CITATION.cff)"
+    - 可以接入 Zenodo，让每个 release 获得 DOI。
+  来源：文档 agent、CI agent
+
+L-02【中】CC BY 4.0 署名不完整
+  位置：README.md:60；index.qmd:180-183、274、364、579；_quarto.yml:13-14；
+        DATA-LICENCE.md:8-30；data-raw/SOURCE.md:15-20；CITATION.cff:19
+  证据：
+    - 在整个仓库中搜索 creativecommons 或 licenses/by，一处都没有。CC BY 4.0 第
+      3(a)(1)(C) 条要求附上许可证文本、URI 或超链接。
+    - 图表和 outputs/ 都是对数据的改编，但没有写明"已修改"或"作者计算"，
+      不满足第 3(a)(1)(B) 条。
+    - DATA-LICENCE 没有说明 outputs/ 这些派生文件本身使用什么许可证。
+    - DATA-LICENCE 和 SOURCE.md 称署名措辞 "verbatim as required by the licensor"。
+      检索到的 Stats NZ 改编作品推荐措辞是 "This work is based on/includes Stats NZ's data
+      which are licensed by Stats NZ for re-use under the Creative Commons Attribution
+      4.0 International licence"，两者不一致。原页被代理拦截，这一点待确认。
+  解决方法：
+    - 所有署名处加上 https://creativecommons.org/licenses/by/4.0/ 链接。
+    - 页脚改为：
+        This work is based on Stats NZ's data (Agricultural production statistics,
+        AGR_AGR_003), licensed by Stats NZ for re-use under the [Creative Commons
+        Attribution 4.0 International licence](https://creativecommons.org/licenses/by/4.0/).
+        Tables and figures are aggregated and reshaped from that data.
+    - 图表 caption 改为 "Source: Stats NZ, AGR_AGR_003, CC BY 4.0. Chart and
+      calculations by Feng Jiang."
+    - DATA-LICENCE 的 Outputs 段明确写出修改内容，以及派生文件采用 CC BY 4.0。
+    - CITATION.cff 加一条数据引用：
+        references:
+          - type: data
+            title: "Agricultural production statistics: livestock numbers by regional council (AGR_AGR_003)"
+            authors:
+              - name: Stats NZ
+            license: CC-BY-4.0
+            date-accessed: 2026-09-04
+  来源：文档 agent、CI agent
+
+L-03【低】许可证覆盖范围不完整
+  证据：
+    - DATA-LICENCE 的 MIT 清单漏了 tests/。
+    - databricks/screenshots 被笼统归入 MIT，但它们是第三方 UI 截图，还包含派生数据。
+    - 报告正文使用 MIT 并不常见。
+  解决方法：补全清单；报告文字和图表可以考虑用 CC BY 4.0；CFF 写成
+        license: [MIT, CC-BY-4.0]。
+  来源：文档 agent
+
+
+======================================================================
+ 九、已核实为正确的内容
+======================================================================
+以下数字都从原始 CSV 独立重算过，与 README、报告和 outputs/*.csv 完全一致：
+
+  - 原始 CSV 的 SHA-256
+    - 与 SOURCE.md 和 load.R 中记录的值一致。
+    - .gitattributes 的 -text 设置有效，在各种平台风格的 clone 下哈希都不变。
+  - 全国羊只：39,571,837 → 23,252,463，下降 16,319,374（16.32M，41.2%）
+  - 前三地区占比
+    - 占可测下降 53.98%，占全国下降 53.57%，两个分母相差 0.77%（124,021 头）。
+    - 可测地区 15 个：Auckland 和 Nelson 在 2025 年为 s，被排除。
+  - 奶牛
+    - 2002–2025 净增 +588,281。
+    - 到 2014 年 +1,536,737（29.77%），此后 −948,456。
+    - 奶牛"与羊同降"的地区计数：7/13、4/15、12/14。
+  - 调和分层 10 / 12 / 50
+    - 各层最大残差分别为 0 / 2 / 701,526；次小残差 507。
+    - 残差为 0 的类年共 11 个，多出的那个是 2007 年奶牛。
+  - 岛屿合计与全国相差 1 头的类年：14/72
+  - 抑制标记
+    - C 标记只出现在 2012–2016 年（全部 44 个代码）。
+    - S 标记峰值 17.6%（2021 年）。
+    - 普查年的 5 个 S 单元格全部是 Nelson。
+    - census_year_reported 失败 9 次。
+  - 普查到普查窗口（2002–2022）：下降 14,446,905，16 个地区，前三占 55.60%
+  - 起始年敏感性
+    - 前三份额 48.31%–59.44%，低于一半的起始年是 2008、2009、2010。
+    - 各地区进入前三的次数：Manawatū-Whanganui 17 次，Southland 16 次，Otago 14 次，Canterbury 9 次。
+  - 44 个代码在 2024 年的全国合计：115,736,083
+  - 畜种代码识别
+    - 6731、7193、7077 在 2025 年分别为 23.25M、5.75M、3.83M。
+    - 与 Stats NZ 2025 新闻稿的 23.3M、5.7M、3.8M 一致。
+  - databricks/README 中的数字（19,626 行、1,397 行、+29.8% / −14.2% 等）
+  - R 的输出：在另一套包版本下（R 4.3.3、dplyr 1.1.4、readr 2.1.5），6 个 CSV 逐字节复现
+  - PySpark 端口：run_local.py 本地 PASS
+  - 已部署的 gh-pages 与 main 同步，站内锚点和仓库内相对链接全部有效
+
+
+======================================================================
+ 十、做得好的地方
+======================================================================
+  - 可复现
+    - 数据只下载一次，提交时附带哈希。
+    - renv.lock 采用 explicit 快照，CI 有 renv::status()$synchronized 检查。
+    - CI 的 R 版本直接取自锁文件；renv/activate.R 与上游完全一致。
+  - CSV 门禁能真实失败
+    - 先 rm 再重跑，然后同时用 git diff --exit-code 和 git status --porcelain 检查。
+    - 删除、新增、CRLF 三种情况都实测能拦住。
+  - 供应链与权限
+    - action 全部按完整 SHA 锁定。
+    - workflow 默认只读，只有 publish job 有写权限。
+    - 发布同时受 needs 和 if 两道门控，PR 从未触发过发布。
+    - 没有 pull_request_target，也没有注入面，仓库中没有密钥。
+  - 数据处理
+    - 所有列按字符读入，前导零不会丢；先校验再转换。
+    - 被抑制的格子保持为 NA 并打标，而且"NA 当且仅当被抑制"在入口处强制执行。
+    - 汇总行与地区行分开处理，从不混加。
+  - 测试
+    - 负向测试用消息子串精确匹配。
+    - R 的变异体杀死率 16/19。
+    - 损坏副本演示是真实的：下标互不相同，每条规则的增量都有断言。
+  - Spark 端口
+    - 正确处理了 null 陷阱：coalesce(isin)、F.filter 代替 array_remove、用补集谓词代替 subtract。
+    - 门禁失败时不覆盖 silver。
+    - 故障注入覆盖面广。
+  - 报告的诚实度
+    - 做了设计匹配窗口和起始年敏感性（包括低于 50% 的年份），区分了 gross 与 net。
+    - 明确说明不画 choropleth 的理由。
+    - CHANGELOG 坦率记录了自己犯过的错误。
+  - 可视化
+    - 图 1 排序、从 0 开始、直接标注数值。
+    - 图 2 用形状和颜色双重编码。
+    - 三张图都有详细的 fig-alt，没有双轴，配色对色弱友好。
+
+
+======================================================================
+ 十一、待确认事项（本环境无法核实）
+======================================================================
+  1. Stats NZ 方法论原文（30% 插补、3% 相对抽样误差、72.1% 回收率、Nelson 方差无法估计、
+     C/S 定义）以及外部链接：datainfoplus 和 stats.govt.nz 被网络代理拦截。
+  2. Stats NZ 对改编作品要求的 CC BY 署名原文措辞（L-02）。
+  3. main 的分支保护细节：是否禁止 force push，是否要求 status check（C-06）。
+  4. ggplot2 4.x 中 annotate(label.size=) 是否已被弃用（R-12）。
+  5. 30% hot-deck 插补是否会让变化量偏向持平（S-04）。
+  6. 把 Chatham 缺失的奶牛行按 0 处理后，2002–2025 是否应为 7/14（S-02）。
+  7. 本地 classic PySpark 与 Databricks serverless（Spark Connect）之间是否有行为差异（P-09）。
+  8. quarto-required 这个配置键名，以当前 Quarto 文档为准（C-02）。
+
+======================================================================
+ 报告结束
+======================================================================

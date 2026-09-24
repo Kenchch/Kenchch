@@ -1,0 +1,247 @@
+======================================================================
+ 待办清单：Kenchch/nz-sheep-decline-by-region
+======================================================================
+
+复核版本：main @ 3db13c4（PR #19 "Address the 2026-09-23 audit"）
+上次审计：7ac588a，完整报告见 nz-sheep-decline-by-region-audit.txt
+整理日期：2026-09-24
+
+复核结论：上次审计的 69 项里，大部分已在 #19 中修复，剩下的是部分修复，没有一项完全没动。
+下面只列还需要做的事，按"谁来做"和优先级分组。
+
+  [设置] = 只能在 GitHub 网页的 Settings 里操作，改代码解决不了
+  [代码] = 需要改仓库文件，可以用一个 PR 完成
+  编号括号中是原审计报告里的对应条目
+
+
+----------------------------------------------------------------------
+ 一、紧急：线上报告没有更新
+----------------------------------------------------------------------
+
+[ ] 1. [设置] 修复 GitHub Pages 部署（C-01 遗留，本次最高优先级）
+    现状：
+      - #19 合并后，CI 的 reproduce 和 port 两个 job 都通过了，但 deploy job 只运行了 1 秒就被拒绝，
+        报错：Branch "main" is not allowed to deploy to github-pages due to environment protection rules.
+      - 线上页面仍是 2026-09-22 从 gh-pages 部署的旧版本：新结论、CC BY 链接和 0.3.0 都没有上线，
+        已经更正过的 "Nothing is withheld from 2002 to 2011" 还挂在页面上。
+      - main 最新提交的 CI 状态显示为红色。
+    步骤：
+      a. Settings → Pages → Build and deployment → Source：改成 "GitHub Actions"。
+      b. Settings → Environments → github-pages → Deployment branches：允许 main，
+         去掉只允许 gh-pages 的规则。
+      c. 重新部署。注意 Pages 部署包在 2026-09-24T10:49:54Z 过期：
+         - 过期前：可以只重跑 deploy job；
+         - 过期后：要用 "Re-run all jobs"，或者再推一个提交。
+      d. 打开 https://kenchch.github.io/nz-sheep-decline-by-region/ 确认，
+         页面日期应为 2026-09-23，并且有 50.6% 和 CC BY 链接。
+      e. 确认无误后，删除 gh-pages 分支，或者用 ruleset 禁止更新它。
+
+[ ] 2. [设置] 补发 v0.3.0 的 tag 和 Release（L-01 遗留）
+    现状：CITATION.cff、DESCRIPTION 和 CHANGELOG 都写着 0.3.0 已于 2026-09-23 发布，
+          但仓库里没有 v0.3.0 这个 tag，也没有对应的 Release（都返回 404）。
+    步骤：等第 1 项完成、线上页面更新后，在 3db13c4 上打 tag v0.3.0，
+          创建 Release，正文用 CHANGELOG 的 [0.3.0] 段落。
+
+
+----------------------------------------------------------------------
+ 二、中优先级：代码和文字
+----------------------------------------------------------------------
+
+[ ] 3. [代码] 删掉 index.qmd 里自相矛盾的"排名阈值"（S-04 遗留）
+    位置：index.qmd:356-358
+    问题：
+      - 原文："rankings separated by less than the national margin above [±0.7M]
+        are not distinguished here"。
+      - 但前四名两两之间的差距都小于 0.7M：
+          Canterbury−Southland  0.659M
+          Southland−Otago       0.636M
+          Otago−MW              0.016M
+        按这条规则前四名都不能区分，正文却仍写 "Canterbury is largest"。
+      - ±0.7M 是全国层面、2025 年一个端点的误差，不能拿来比较地区之间的差距。
+    修改：删掉这个阈值，改为"地区层面的抽样误差未公布；Otago 与 Manawatū-Whanganui
+          相差 0.4%，名次不作区分；前三份额只取决于第三、第四名归谁"。
+
+[ ] 4. [代码] 让 CI 的"渲染时不能有 R 警告"检查覆盖所有代码
+    位置：.github/workflows/reproduce.yml:108-113；index.qmd:14（setup 代码块设了 include: false）
+    问题：
+      - 现在的检查只 grep 页面里的 cell-output-stderr。
+      - 但几乎所有计算都在隐藏的 setup 代码块和正文的内联 `r` 表达式里，这些地方的警告
+        不会写进页面，所以检查不到。
+      - 实测 `r max(numeric(0))` 会渲染成 "-∞"，CI 照样通过。
+    修改（二选一）：
+      - 在 setup 代码块开头加一行 options(warn = 2)，把警告变成错误；
+      - 或者在 CI 里检查 quarto render 的输出日志，出现 "Warning" 就失败。
+
+[ ] 5. [代码] PySpark 版补上 value_iff_suppressed 的测试（P-02 遗留）
+    位置：databricks/02_quality_gate.py:97-99；databricks/run_local.py:350-414
+    问题：把这条规则改成永远通过（F.lit(True)），run_local.py 仍然 PASS。
+          R 版有对应测试，PySpark 版没有。
+    修改：在 run_local.py 里加两个场景，并断言这两行都以 value_iff_suppressed 进入隔离：
+      a. 一个已发布的值被标了 OBS_STATUS="s"；
+      b. OBS_VALUE 为空，但没有任何标记。
+
+
+----------------------------------------------------------------------
+ 三、低优先级：代码和文字
+----------------------------------------------------------------------
+
+图表与报告文字
+[ ] 6. 图 4 的 alt 文本 "Sheep falls throughout" 与数据不符：羊的指数在 2005 年是 100.8、
+       2006 年是 101.3，都高于 2002 年。
+       改为 "Sheep is flat to 2006, then falls to 59 by 2025"，最好由代码判断后生成。
+       位置：index.qmd:499
+[ ] 7. 图 1 标题 "…held 50.6% of the flock" 缺少限定：50.6% 是 15 个可测地区的份额，
+       不是全国的。改为 "…held 50.6% of the 2002 flock in these regions"。
+       同时把注释框移到前三名的柱子旁边（D-10 遗留）。
+       位置：index.qmd:440-441
+[ ] 8. 仍是手写的数字或年份，改成由代码生成（D-03、R-05 遗留）：
+       - 图 3 标题里的 "until 2011 / 2012 / from 2014 / peaking in 2021"（index.qmd:557、871）
+       - "44 livestock codes"（905、915、956）
+       - "2009 or later"（1234）
+       - 副标题 "2002–2025"（index.qmd:3）
+       - RSE_2025 <- 0.03（:64），以及 2017:END_YEAR（:193-194）
+       - run_local.py:210-229 里的 2002、2025、1397、15
+[ ] 9. 对空值做防护（R-12、N-6 遗留）：
+       - index.qmd:664 的 and_list(lost_cattle_class) 为空时，句子会以 " lost sheep" 开头；
+       - index.qmd:917 的 max(all_c_years) 为空时渲染成 -Inf；
+       - index.qmd:274 的 third_gap 为 NA 时渲染成 "NA head apart"。
+       做法：对这几处加断言，或者提供兜底文字。
+
+README
+[ ] 10. README 数字核对只查"至少出现一次"（D-18、N-5）
+        问题：
+          - 同一短语出现两次时，只改其中一处，tests/test-readme-figures.R 照样通过；
+          - alt 文本里的 3.57 / 2.91 / 2.27 / 2.25 / 41.3、"30 percent"、"72 class-years"
+            不在核对范围内。
+        修改：
+          - 按预期出现次数核对，并把 alt 文本里的数字也写进 key-figures.csv；
+          - 或者改由 README.qmd 生成 README；
+          - README:39 "No hand-copied numbers" 改为 "the headline figures are checked
+            against outputs/key-figures.csv"。
+[ ] 11. README 的小问题（S-13、D-14、D-05 遗留）：
+        - README:13 同一句里混用 "+1.54 million / −0.95 million / 588 thousand"，
+          统一写成 "0.59 million"。
+        - 解释 15 / 14 / 13 这几个分母分别指什么。
+        - 定义 "class-years"（3 个类别 × 24 年 = 72）。
+
+R 代码
+[ ] 12. 从 tests/ 或 R/ 目录运行 checks.R 仍然报 "cannot open the connection"（R-13）。
+        原因：根目录守卫写在 load.R 里，但各脚本在守卫生效前就先执行了 source("R/load.R")。
+        修改：在 checks.R 和各测试文件开头先判断 file.exists("renv.lock")，
+        或者用 rprojroot 定位根目录。
+[ ] 13. checks.R 里 one_published()、residual_tiers 行数、coverage 年份这三个断言没有测试，
+        删掉任何一个 CI 都不会失败（R-14、N-6）。给它们补小夹具测试。
+        另外，test-r-analysis.R 里 recent_above 的测试夹具
+        c(20, 5.9, 13.7, 5.9, 11.8) 取前 4 个和后 4 个结果相同，杀不死 head/tail 变异，
+        要换成两种取法结果不同的数据。
+[ ] 14. 两处未命名的 stopifnot（checks.R:138、171）改成 "说明" = 条件 的写法。
+[ ] 15. 可维护性（R-15 遗留，可选）：
+        - write_csv 用 "NA" 表示缺失；
+        - 输出按字符型 area_code 排序；
+        - 仍依赖 janitor；
+        - 文件名 dairy-comparison-windows.csv 与对象名 class_windows 不一致。
+        其中改排序、改缺失值写法会改动已提交的输出，要同步重新生成。
+
+PySpark
+[ ] 16. 与 R 行为不一致（N-4）：
+        - YEAR：try_cast 把 ' 2025'、'+2025'、'02025' 都当成 2025，R 会拒绝；
+          加规则 YEAR_AGR_AGR_003.rlike("^[0-9]{4}$")。
+        - DATAFLOW：只检查这一列存在，不检查取值；加取值规则。
+        - 大数值：20 位的 OBS_VALUE 在 ANSI 关闭时会静默变成 Long.MaxValue；
+          改用 try_cast(... AS BIGINT)，结果为 null 时隔离。
+        - 01 的"未知状态"检查（01:116-120）没有测试，要补一个。
+[ ] 17. "读完再算一次哈希"不起作用（N-3）
+        位置：01_ingest_and_pin.py:88-136
+        原因：bronze 是延迟读取的，二次哈希之后的操作还会重新读文件。
+        修改：先执行 bronze = bronze.localCheckpoint(eager=True) 再算第二次哈希，并补测试。
+[ ] 18. 其他（P-05、P-07、P-08、P-09 遗留）：
+        - 02:43-44 重复定义了 START/END/CENSUS 常量；
+        - DAIRY_PEAK_YEAR = 2014 写死，没有 R 那样的峰值断言；
+        - 没有 run_id，gold 表没有血缘列；
+        - 失败的运行仍会覆盖 quality_rule_summary，README 没有说明这一点；
+        - manifest 里的哈希覆盖标志没有测试；
+        - check_failure_paths 约 120 行，没有拆分，也没有类型注解；
+        - ANSI 关闭的情况仍未测试。
+        对不可达的纵深防御守卫加注释说明。
+
+CI
+[ ] 19. 版本一致性检查不比对日期（N-3）：把 CITATION 的 date-released 改成 2020-01-01，
+        检查仍然通过。
+        修改：加检查，要求 CITATION.cff 的 date-released、CHANGELOG 的 "## [x.y.z] - DATE"
+        和 index.qmd 的 date: 三者相同；可以再加一个 tag 推送时的检查，
+        确认 tag 名与 DESCRIPTION 的版本一致。
+[ ] 20. 没有手动重新部署的途径（N-4）：部署条件只允许 push 事件。
+        建议改为：
+        (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+          && github.ref == 'refs/heads/main'
+[ ] 21. pyspark 是从源码包（sdist）安装的，构建时 pip 另装的 setuptools 等不受哈希约束；
+        pip 本身的版本也没有固定（N-5，待确认）。
+        修改：把 setuptools、wheel 加进 requirements.in 并生成哈希，安装时加
+        --no-build-isolation；或者在注释里写明这个残余风险。
+[ ] 22. requirements.txt 头部写的是由 uv 生成，而 requirements.in 说用 pip-compile 生成，
+        统一成一种工具（N-6）。
+[ ] 23. .gitignore 里 .quarto/（第 2 行）和 /.quarto/（第 24 行）重复。
+        DESCRIPTION 的 License 字段可以改成 MIT，也可以保持不动。
+
+数据与文档
+[ ] 24. data-raw/SOURCE.md:47-49 写了 2017 年 "19,568 head short"，
+        这实际上给出了 Nelson 被抑制单元格的近似值，与报告"不把残差说成某地区的值"的原则
+        不一致。改为"不能精确对平"，删掉具体头数。
+[ ] 25. SOURCE.md 仍把两种标记叫作 "s (suppressed) / c (confidential)"，与报告的术语不一致，
+        按报告的叫法统一（D-14）。
+[ ] 26. 提交 SDMX codelist CL_AREA_AGR_AGR_003 的快照，并在 load.R 里断言代码到地区名称的映射
+        （S-12）。
+[ ] 27. 2024 年全国总数的期望值（23,583,001 等）补上来源 URL（D-04）。
+[ ] 28. Databricks 截图仍是修复前的错误输出（D-06、C-08 遗留）：
+        - dashboard.png 的折线从 2017 年开始，y 轴从 5 起，条形按字母排序；
+        - 截图里能看到部分个人邮箱和 Job ID。
+        在 serverless 上用当前代码重跑，重新截图，截图时裁掉路径；
+        做不到的话，先删掉 dashboard.png。
+
+
+----------------------------------------------------------------------
+ 四、GitHub 设置与仓库清理（都在网页上操作）
+----------------------------------------------------------------------
+
+[ ] 29. 删除 5 个陈旧分支：
+        - add-pyspark-port：其中提交 32b2752 的作者是个人邮箱，优先删除
+        - claude/nz-sheep-decline-issues-ex97en
+        - codex/audit-data-contracts
+        - fix/audit-findings
+        - fix/audit-2026-09-23
+[ ] 30. Settings → General → 勾选 "Automatically delete head branches"。
+[ ] 31. 给 main 配置 ruleset（C-06）：
+        - 合并前必须走 PR；
+        - reproduce 和 port 设为必需的 status check；
+        - 禁止 force push 和删除；
+        - 不允许 bypass。
+[ ] 32. 给 v* 配置 tag ruleset，禁止更新和删除；开启 immutable releases。
+[ ] 33. 个人设置 → Emails：勾选 "Block command line pushes that expose my email"。
+
+
+----------------------------------------------------------------------
+ 五、需要你在 Settings 里确认的事（无法通过 API 核实）
+----------------------------------------------------------------------
+
+  - Pages 的 Source 设置：从部署失败推断，现在仍是 "Deploy from branch"
+  - github-pages 环境的部署分支策略
+  - main 的分支保护细节（API 返回 403）
+  - 是否开启了 immutable releases
+  - 是否开启了 "Block command line pushes that expose my email"
+  - 真实的 validate 包在规则引用不存在的列时，是否把 error 设为 TRUE
+    （本地没有这个包，用替身测的）
+  - ggplot2 4.0.3 下 annotate("label", linewidth = 0) 会不会产生弃用警告
+    （本地没法渲染）
+
+
+----------------------------------------------------------------------
+ 六、建议的执行顺序
+----------------------------------------------------------------------
+
+  1. 今天：第 1 项（修部署）。Pages 部署包在 10:49 UTC 过期，过期后必须重跑整个 workflow。
+  2. 部署成功后：第 2 项（tag 和 Release）、第 29-33 项（仓库设置）。
+  3. 一个代码 PR：第 3-5 项（中优先级），外加第 6-7 项和第 24 项（改动小）。
+  4. 第二个代码 PR：第 8-23 项，以及第 25-27 项。
+  5. 有空时：第 28 项（重新截图）。
+
+======================================================================
