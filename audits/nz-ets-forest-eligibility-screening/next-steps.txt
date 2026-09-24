@@ -1,0 +1,208 @@
+================================================================================
+  NZ ETS 森林资格筛查项目 —— 剩余问题处理步骤
+================================================================================
+
+适用仓库 : Kenchch/nz-ets-forest-eligibility-screening
+编写日期 : 2026-09-24
+依据     : audit-report.txt（本目录）和你反馈的"未做清单"
+当前状态 : 远端只有 main 分支，仍停在审计时的 622e3b8，本地修复尚未推送。
+           以下步骤按先后顺序排列，每步都写明要做什么、怎么做、做完如何确认。
+
+
+--------------------------------------------------------------------------------
+第 0 步：先保住本地修复（今天就做，约 10 分钟）
+--------------------------------------------------------------------------------
+
+为什么先做：codex.exe 以前覆盖过工作区。修复只在本地，随时可能丢。
+
+1. 停掉 codex.exe
+   任务管理器里结束进程；或在 PowerShell 中运行：
+     Get-Process codex -ErrorAction SilentlyContinue | Stop-Process
+   确认：Get-Process codex 没有输出。
+
+2. 备份一份当前改动（防止后面操作失误）
+     git stash push -u -m "backup-before-commit"
+     git stash apply
+   或者直接把整个项目目录复制一份。
+
+3. 确认改动没有继续变化
+     git status
+     git diff --stat
+   隔 1–2 分钟再运行一次，两次结果相同再继续。
+
+4. 在新分支上提交，不要直接推 main
+     git switch -c fix/audit-findings
+   建议按下面分组，分几个 commit 提交（规则口径那一组一定要单独提交，
+   因为它会改变 Gisborne 的输出数字，单独提交便于审查和回滚）：
+
+     commit 1  安全修复：H-01 XSS、H-02 面板报错、M-12 API key
+               涉及 src/ets_screening/sample_review.py、screen.py、tests/
+     commit 2  校验与 CLI：H-06、M-03、M-13、M-18
+               涉及 load.py、screen.py、scripts/reproduce.py、arcgis/ets_screening.pyt
+     commit 3  规则口径：H-03、M-01、M-02 等，连同重新生成的 outputs/
+               涉及 rules.py、geometry.py、rules/rule_register.csv、outputs/gisborne/
+     commit 4  文档与 CI：README、SOURCES.md、data/README.md、.github/workflows/ci.yml
+
+   每组的做法：
+     git add <这一组的文件>
+     git commit -m "<说明>"
+
+5. 推送前先在本地跑一遍 CI 的全部步骤
+     pytest
+     python scripts/verify_checksums.py
+     python scripts/reproduce.py
+     git diff --exit-code -- "outputs/gisborne/*.csv" "outputs/gisborne/findings.json" "outputs/gisborne/review/*.csv"
+     python scripts/semantic_hashes.py
+   全部通过后再推送：
+     git push -u origin fix/audit-findings
+
+6. 把分支名告诉我，我会按 audit-report.txt 逐项核对已修的部分、跑测试，
+   并确认 README 中"未做"的说明与代码一致。
+
+
+--------------------------------------------------------------------------------
+第 1 步：不需要网络、现在就能做的（约半天）
+--------------------------------------------------------------------------------
+
+[1a] L-05  R-05 类名校验（约 10 行）
+  问题：白名单里的 "Bare or Lightly Vegetated Surfaces" 在 5,712 个单元中一次都没
+        命中，类名写错了也不会报错。
+  做法：在 rules.py 的 evaluate_rules() 开头加校验：
+      unknown = set(config.plantable_lcdb_classes) - set(candidates["lcdb_class"].unique())
+      if unknown:
+          warnings.warn(f"plantable_lcdb_classes not found in input: {sorted(unknown)}")
+  同时加一个测试：白名单中放一个不存在的类名，断言会发出警告。
+  以后能联网时，再改为按 LCDB 的整数类别代码匹配，不再按名称字符串。
+
+[1b] H-04  先把代码改好，数据以后再刷新
+  问题：1990 年前森林证据只取了 LUCAS 72 类（人工林），漏掉 71 类（天然林）。
+  做法：
+    - scripts/download_gisborne_data.py:205 的过滤条件改为
+        (LUCID_1989 LIKE '71%' OR LUCID_1989 LIKE '72%')
+      并保留 1989 年和 2007 年两个时点的类别字段。
+    - 在 rules.py 中按法律路径分成三类证据：
+        71→71（永远不能成为 post-1989）      → material
+        2007 年为 72（pre-1990 人工林）      → material
+        1989 年是森林、2007 年已毁林          → advisory + 人工复核
+    - 用合成数据写单元测试，覆盖这三类。
+  README 写成："代码已支持，Gisborne 数据待重新下载后刷新"。
+
+[1c] H-05  先在登记册里登记这道门槛
+  问题：2025 年 LUC 1–6 外来林注册限制目前只写在 README，审计表里看不到。
+  做法：在 rules/rule_register.csv 加一行：
+      R-09, LUC 1–6 exotic forestry registration limit,
+      Climate Change Response (ETS—Forestry Conversion) Amendment Act 2025（条款待确认）,
+      testable_from_open_data = no, implementation = Not implemented,
+      failure_action = Manual review required
+  并把 R-09 加进 rules.py 的 manual_review_rule_ids 和 screen.py 的 unresolved_rules。
+  这样这道门槛会出现在 rule_results.csv 和 run_manifest.json 里。
+
+[1d] H-07  归档之前先补溯源信息
+  做法：
+    - 下载脚本把 retrieved_at（下载时间）和每层的 where 过滤条件写进
+      data/processed/gisborne_manifest.json。
+    - 修改 scripts/semantic_hashes.py，把列名、CRS、图层名一起纳入哈希；浮点值先保留
+      6 位小数再哈希（具体代码见 details/4-reproducibility-ci-licensing.md 的 REP-05）。
+    - 给 data/processed/ 下的输入文件也计算语义哈希，并在 CI 中检查。
+  作用：以后能区分"上游数据变了"和"只是 GDAL 版本不同"。
+
+[1e] 评审版本闸门（防止用旧样本、旧卡片评审）
+  做法：
+    - 在 review_sample_ids.csv 旁边写一个 review_version.json，内容为：
+        {"sample_algorithm": "sha256-rank-v2", "cards_rendered_after": "<十字修复的 commit>"}
+    - 修改 scripts/ingest_review_labels.py：读不到这个文件，或版本不对，就报错退出，提示
+        "评审样本或卡片已过期，请先重新抽样并重新渲染卡片"。
+  作用：在第 2 步完成之前，即使有人提前用旧卡片评审，结果也进不了证据链。
+
+[1f] ArcGIS 旧数字加说明
+  在 arcgis/README.md 和 README 中注明：arcgis/layout_map.pdf 和 arcgis/build_layout.py
+  里写死的数字（2,687 / 2,801 / 224 / 694）是旧规则的结果，待在 ArcGIS 中重新运行。
+  更好的做法是让 build_layout.py 从 outputs/gisborne/summary.csv 读取这些数字，
+  不再写死。
+
+
+--------------------------------------------------------------------------------
+第 2 步：需要访问影像服务，必须在人工评审开始前完成（约 1 天）
+--------------------------------------------------------------------------------
+
+[2a] 重新分层抽样
+  问题：现在的 30 个样本来自旧算法，167 个 advisory 候选的入样概率为 0。
+  做法：
+    - 用当前的 select_review_sample() 分层抽样，例如 clean 24 个 + advisory 6 个；
+      或者按两组占比抽，但 advisory 至少抽 5 个。
+    - 把抽样框（全部候选 ID 列表）的 sha256 写进 review_version.json 和 run_manifest.json。
+    - 覆盖 outputs/gisborne/review/review_sample_ids.csv。
+  确认：用同一 seed 重新运行，结果完全相同。
+
+[2b] 重新渲染卡片
+  前提：十字定位修复（M-16）已提交。
+  做法：
+    - 运行 scripts/download_review_cards.py，删掉旧的 cards/*.jpg 后重新生成。
+    - 概览层级取 min(_choose_level(...), detail_level - 3)，保证两个面板不同。
+    - 在卡片底边画上影像署名，并写一行 "screening review aid – not an eligibility
+      determination"。
+  确认：
+    - 随机抽 5 张卡片目视检查，十字都落在多边形内。
+    - 卡片文件名与 review_sample_ids.csv 一一对应（可以写进 CI 检查）。
+
+[2c] 同时重新下载数据（完成 1b 的后半部分）
+    - 运行 download_gisborne_data.py，更新 checksums.sha256 和 gisborne_manifest.json。
+    - 运行 reproduce.py，更新 README 中受影响的数字。
+    - 这一步会改变输出数字，要单独提交一个 commit。
+
+完成第 2 步后，把 review_version.json 更新为新版本，第 1e 步的闸门就会放行。
+
+
+--------------------------------------------------------------------------------
+第 3 步：需要其他人或外部资源（时间不定）
+--------------------------------------------------------------------------------
+
+[3a] H-05  请懂 ETS 法规的人确认
+  要确认的问题：
+    1) Forestry Conversion Amendment Act 2025 的具体条款编号和生效日期；
+    2) "每个农场最多注册其 LUC 1–6 土地的 25%" 的准确表述，以及 LUC 6 的许可安排；
+    3) 有哪些豁免（例如 Māori 土地、2025-10-31 之前已是森林的土地）。
+  确认后：把 R-09 从 "no" 改为 "partial"，叠加 NZLRI LUC 图层计算 luc_1_6_pct，
+         作为 flag 输出（不直接隔离）。
+
+[3b] H-07  原始数据归档
+    - 在 Zenodo 建一个数据集，上传 data/raw/ 下的原始下载文件和 manifest，取得 DOI。
+    - 在 README、gisborne_manifest.json 和新增的 CITATION.cff 里写上这个 DOI。
+    - 同时补上 DATA_LICENSE.md，逐个数据集写明权利人和许可（见 M-17）。
+
+[3c] ArcGIS 工具箱在新规则下重跑
+  在 ArcGIS Pro 的 Python Command Prompt 中运行：
+      conda create --clone arcgispro-py3 --name arcgispro-ets
+      activate arcgispro-ets
+      conda install -c conda-forge geopandas
+      pip install -e <项目路径>
+  然后在 ArcGIS Pro 中把 Python 环境切换到 arcgispro-ets，重跑工具箱和 build_layout.py，
+  重新导出 arcgis/layout_map.pdf，删掉第 1f 步加的说明。
+  如果克隆环境装不上 geopandas，就维持第 1f 步的说明。
+
+
+--------------------------------------------------------------------------------
+第 4 步：收尾
+--------------------------------------------------------------------------------
+
+  □ README 的"未做清单"逐项更新：做完的删掉，没做的写明原因和计划。
+  □ 本地跑一遍第 0 步第 5 条的全部 CI 步骤，然后推送。
+  □ 把分支名发给我做最终核对。
+  □ 审计报告 PR（Kenchch/Kenchch#4）：它在你公开的主页仓库里。
+      - 想保留：把它从 draft 改为 ready，然后合并；
+      - 不想公开：直接关闭 PR，并删除 claude/admiring-edison-sh5rec 分支。
+    告诉我你的决定，我也会停掉每小时一次的自动检查。
+
+
+--------------------------------------------------------------------------------
+进度一览（做完一项勾一项）
+--------------------------------------------------------------------------------
+
+  第 0 步  □ 停 codex   □ 备份   □ 分组提交   □ 本地跑 CI   □ 推送分支
+  第 1 步  □ 1a L-05   □ 1b H-04 代码   □ 1c R-09 登记   □ 1d 溯源
+           □ 1e 评审闸门   □ 1f ArcGIS 说明
+  第 2 步  □ 2a 重新抽样   □ 2b 重新渲染卡片   □ 2c 重新下载数据
+  第 3 步  □ 3a 法规确认   □ 3b Zenodo 归档   □ 3c ArcGIS 重跑
+  第 4 步  □ README 更新   □ 最终核对   □ 处理 PR #4
+
+================================================================================
