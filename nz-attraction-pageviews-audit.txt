@@ -1,0 +1,324 @@
+nz-attraction-pageviews 审计汇总：问题与解决方案
+===============================================
+
+仓库：Kenchch/nz-attraction-pageviews，审计版本 HEAD 68cdc66
+日期：2026-09-26
+方法：测试、验证、审核三个 agent 独立检查。它们都在仓库副本里运行，原仓库未做任何改动。
+问题来源标注：T = 测试 agent，V = 验证 agent，R = 审核 agent。
+被两个或三个 agent 独立发现的问题，已合并成一条。
+
+
+一、基线结果
+------------
+
+- 按 CI 配置重现：195 个测试通过，1 个跳过（live 测试）。ruff check 和 ruff format 都通过。
+- 这些组合也都通过：Python 3.10 / 3.11 / 3.12 / 3.13；最低依赖版本（duckdb 1.0.0、pytest 8.0.0）；随机测试顺序；多种时区。没有发现不稳定测试。
+- 行覆盖率 91%。但 CLI 的 ingest 路径（__main__.py:68-104）覆盖率为 0。
+- demo.py 输出与 README 一致：720 行，再加 24 行，共 744 行，0 条重复。
+- live 测试（RUN_LIVE=1 pytest -m live）失败。原因是沙箱代理拒绝连接 Wikimedia（403），不能据此判断代码有错。
+- 结论：现有测试全绿，但有几个测试本身把错误行为当成预期来断言。下面的问题大多数是用副本里的探针测试或脚本复现出来的。
+
+
+二、高严重度问题
+----------------
+
+[H1] 状态会在仓库数据不完整时报 "ok"。README 写的是："a night with anything unresolved is degraded, never ok"，实际并非如此。
+    来源：T1、V1、V3b、R4
+    位置：ingest.py:771-785（计算状态的代码）、ingest.py:445-453
+    问题：以下情况都报 "ok"，退出码为 0。
+      (a) 某个场馆抓取失败（ApiError，例如一直返回 403 或 400）时，这个场馆直接被丢掉，不计入状态。
+      (b) 某个场馆第一次出现拒收行，且拒收率低于上限时，当晚也是 "ok"。原因是 blocked 查询在 _load 写入今晚的 quarantine 之前就执行了，要到第二晚才变成 "degraded"。
+      (c) 超出回溯上限而放弃的天数（"gave up on N days"）也报 "ok"。
+      (d) 从来没有产出过任何数据的场馆也报 "ok"。
+    证据：
+      - 探针复现了以上每一种情况。
+      - 现有测试把 "ok" 写成了预期结果：tests/test_venue_failures.py:24、tests/test_ingest.py:937、tests/test_ingest.py:1249。
+    解决方案：
+      - 让 _fetch_all 返回失败场馆的 id。
+      - 在 _load 写入 quarantine 之后、写 run_log 之前计算状态：
+          unresolved = held | blocked | failed_ids | gave_up_ids
+                       | {今晚新增的拒收行里，没有被 accept 的那些所属场馆}
+      - 把上面三个断言 "ok" 的测试改成断言 "degraded"。
+      - 如果决定不改代码，就要把 README 和 DESIGN.md 里对 ok / degraded 的定义改成与实际一致。
+
+[H2] 直连请求返回 200 但中间缺天时，缺的那几天会永久丢失。
+    来源：R1、T5
+    位置：client.py:375-377（if items: return items），以及 ingest.py:340-351
+    问题：
+      - 放宽窗口的路径和 404 路径都会检查结果里有没有漏天。直连请求如果返回了非空的 200，结果就被直接相信。
+      - 窗口后面几天的数据到了，被当成"已发布"的证据，于是 watermark 越过中间的空洞，状态仍是 "ok"，之后再也不会去重新请求这些天。
+      - DESIGN.md:345 说测试覆盖了"不越过 200 响应中间的空洞"，这与现有测试 test_a_hole_behind_a_day_that_arrived_is_trusted_as_quiet 和探针结果都矛盾。
+    证据：
+      - 用存根 API 模拟"宽窗口只返回前 5 天，窄窗口返回完整数据"。结果 30 天回填只拿到 5 天，watermark 越过空洞，后面三晚也没有补回来。另一个正常场馆拿到了 30/30 天。
+      - 这是 R 的复现，T 也独立复现了同样的结果。
+      - 上游是否真的会这样返回，因为网络被封，没有在线确认。
+    解决方案：
+      - 直连请求返回非空 200 后，找出窗口内缺失的连续日期段，每段各发一次窄窗口请求（不超过 7 天），再用 _within 合并。
+      - 用一张小表记录"已确认为安静"的日期段，避免稀疏场馆每晚都重复验证。
+      - 至少要在 run_log.note 里报告中间空洞的数量，并更正 DESIGN.md:345。
+
+[H3] timestamp_parses 拒收（view_date 为 NULL）会让 watermark 永久冻结，状态却是 "ok"，resolve ... null --accept 也不起作用。
+    来源：R2、V2、T3
+    位置：ingest.py:317-321、ingest.py:771-778（blocked 查询带有 view_date IS NOT NULL 条件）、ingest.py:906-910、__main__.py:27-39 和 62
+    问题：
+      - 只要本次运行出现任何日期为 NULL 的拒收行，_venue_watermark 就返回 None，而且不看这条是否已被 accept。
+      - blocked 查询排除了 NULL 日期，所以这种情况永远不会让状态变成 "degraded"。
+      - resolve <venue> null --accept 会打印"watermark may now step over those days"，但代码里没有任何地方读取这个决定。
+      - 结果是该场馆每晚重新请求整个区间，这个区间逐晚变长，直到回溯上限 180 天后开始"gave up"，状态始终是 "ok"。
+    证据：
+      - 模拟 200 晚：watermark 一直停在同一天，其中 199 晚状态为 "ok"。
+      - 执行 --accept 后 quarantine 显示 'accepted'，但 watermark 仍然不动。
+      - 测试套件从未执行过 ingest.py:321，也从未执行过 resolve 处理 null 的分支。
+    解决方案：
+      - 给 NULL 日期的拒收行记录所在窗口（window_start / window_end），watermark 停在 window_start 之前，而不是把整个场馆冻结。
+      - 已 accept 的 NULL 拒收行按 (venue_id, rule, 窗口) 或去重键匹配，不再阻挡 watermark。
+      - 去掉 blocked 查询里的 view_date IS NOT NULL。
+      - 在修好之前，CLI 不要再打印"watermark 可以越过"这句话。
+      - 补上对应的测试。
+
+
+三、中严重度问题
+----------------
+
+[M1] 一次临时错误就让之后每晚永久 "degraded"，CLI 没有正确的解除办法。
+    来源：R3、T2、V3a
+    位置：ingest.py:771-784、ingest.py:886-921
+    问题：blocked 统计所有没有被 accept 的 quarantine 行，不管这一天现在是否已经解决。以下情况会永久显示 "degraded"：
+      (a) 上游修好了，这一天已经正常加载，watermark 也已越过。
+      (b) 场馆已从 venues.csv 删除。
+      (c) 窗口外的零散日期，按设计本来就不阻挡 watermark。
+      唯一的解除办法是 --accept，但它的含义是"这天永远不会到来"，与事实不符。这正是 __main__ 的注释里提醒要避免的告警疲劳。
+    证据：
+      - 坏的那天后来加载成功（views=10），watermark 也越过了，之后 3 到 5 晚仍然全是 degraded。
+      - 加注释后仍是 degraded。
+    解决方案：
+      - 在 _load 里，每加载一行干净数据，就把同一场馆、同一天的未解决拒收行自动标记为 superseded：
+          UPDATE quarantine SET resolved_at=?, resolution='superseded'
+          WHERE venue_id=? AND view_date=? AND resolved_at IS NULL
+      - blocked 只统计真正还在阻挡的行，并且只统计 venues.csv 里配置的场馆：
+          SELECT DISTINCT q.venue_id FROM quarantine q LEFT JOIN watermark w USING (venue_id)
+          WHERE q.resolution IS DISTINCT FROM 'accepted'
+            AND (q.view_date IS NULL OR w.last_date IS NULL OR q.view_date > w.last_date)
+            AND q.venue_id IN (<venues.csv 中的 id>)
+
+[M2] resolve 流程有缺陷。
+    来源：T4、V7、R3
+    位置：ingest.py:863-870、ingest.py:910 和 917（resolved_at IS NULL）、__main__.py:57-70
+    问题：
+      (a) 先加注释再 --accept 时匹配 0 行，退出码为 1，却仍然打印"0 rejection(s) accepted; the watermark may now step over those days"。
+      (b) --accept 会丢掉 --resolution 的文字，数据库里只存 "accepted"。
+      (c) 被阻挡的那天每晚都会重新请求，下一晚的"reopen"会把 resolution 设为 NULL，把运维写的注释抹掉。探针复现："Emailed Wikimedia, ticket T12345" 在下一晚变成了 NULL。
+      (d) 已 accept 的问题不会被 reopen，这与 README 的"A recurrence reopens the issue"不完全一致。README 里也没有给出 --accept 的用法示例。
+      (e) 不能一次处理一个日期区间，也没有 --all，场馆标题一变就要按天逐条 resolve。
+    解决方案：
+      - accept 时改用 WHERE resolution IS DISTINCT FROM 'accepted'。
+      - changed == 0 时打印单独的提示。
+      - 注释文字另存到 note 列或历史表；reopen 时只清 resolved_at，保留文字。
+      - 支持日期区间或 --all。
+      - README 补上 --accept 的示例和它的限制说明。
+
+[M3] venues.csv 里 Te Papa 用的很可能是重定向标题（疑似，未在线确认）。
+    来源：R5、V6、T-S1
+    位置：venues.csv:2（te-papa, Te_Papa）
+    问题：README 和 DESIGN.md 都要求使用规范标题，因为重定向标题只统计经过重定向进来的流量。
+    证据：
+      - venue_name 本身写的是 "Museum of New Zealand Te Papa Tongarewa"。
+      - tests/test_ingest.py:14 用的是 Museum_of_New_Zealand_Te_Papa_Tongarewa。
+      - 采集的 fixture 里 Te_Papa 每天只有 34 到 67 次浏览，而 Milford Sound 每天 146 到 217 次，符合 DESIGN 描述的重定向低估模式。
+    解决方案：
+      - 用 https://en.wikipedia.org/w/api.php?action=query&titles=Te_Papa&redirects=1&format=json 确认。
+      - 如果确实是重定向，就换成规范标题，并删掉 te-papa 的 watermark 和 pageviews，重新回填。只改 CSV 的话，旧 watermark 会阻止重新回填。
+      - 长期做法：加一个 check-venues 命令，通过 MediaWiki API 解析重定向；把标题和 watermark 存在一起，标题变化时触发重新回填或给出警告。
+
+[M4] 整轮质量门已经取消，但遗留的死代码和过时文档仍在。
+    来源：R11、V4、V10、T10
+    死代码：
+      - quality.QualityGateFailed 在任何地方都没有被 raise。
+      - 因此以下代码都执行不到：ingest._quarantine_rejects（936-960）、ingest.py:814-817、__main__.py:82-84，以及 tests/test_gate_duration.py:75 和 134 的 except 分支。后者还悄悄放宽了那个测试接受的结果。
+      - quality.py:191 的 date_not_in_future 在流水线里触发不了：窗口终点是 today-2，而且 date_in_requested_window 先于它检查。
+      - ingest.py:346 也执行不到。
+    过时或错误的文档：
+      - DESIGN.md:22-23 的图里还画着 "gate (abort)"。
+      - DESIGN.md:155-160 说"10 bad days / 240 rows 报 ok"，实测结果是 degraded。
+      - DESIGN.md:283、343；ingest.py:9、295、590-596。
+      - 测试文档字符串 test_ingest.py:1297、1682、1758、230、1218 描述的是旧行为。
+      - _apply_gate 的注释说"no self-heal"，但测试 test_a_held_venue_heals_itself_on_the_next_run 断言会自愈。
+      - DESIGN.md:298-300 说 count(*) 每次运行都会增长，实际拒收行已去重，测试也断言它等于 1。
+      - DESIGN.md:276-281 的表结构漏了 quarantine.resolved_at 和 resolution 两列。DESIGN.md:267 有 Markdown 渲染错误。
+      - ingest.py:160 说"README 推荐的查询"，这个查询实际写在 DESIGN.md 里。
+      - client.py 的文档字符串说重试所有 "5xx"，实际不重试 501 和 505 及以上。
+      - DESIGN.md:341 说"每条验收规则都有测试"，与事实不符。
+    解决方案：
+      - 删除 QualityGateFailed、_quarantine_rejects、相关的 except 分支和执行不到的规则。
+      - 按"每个场馆、只看新拒收行就暂停该场馆"的现行模型重写上面这些段落，并在 DESIGN 里补全列清单。
+      - 把事故经过的叙述移到 DESIGN 或提交记录，代码注释只写不变量。
+
+[M5] 关于 AI 使用的说明与事实不符。
+    来源：V5，已人工抽查确认
+    位置：README.md:79-85、.github/pull_request_template.md:15-18
+    问题：
+      - README 链接的个人主页 Kenchch/Kenchch#how-i-use-ai-tools 已没有这一节，链接失效。PR 模板里"profile README 已说明做法"也不成立。
+      - README 说 Co-Authored-By 尾注已于 2026-09-06 从历史中移除，但 HEAD 68cdc66 和 fdb4355 两个提交仍带有这个尾注。
+    解决方案：
+      - 在个人主页重新发布这一节，或者把说明直接写进 README。
+      - 措辞改为"2026-09-06 之前的提交已移除尾注，之后的提交保留"。
+
+[M6] 请求数量膨胀，而且 requests 指标有误导性。
+    来源：R6、T6
+    位置：client.py:300-428、ingest.py:430
+    问题：
+      - 标题拼错或文章不存在时，一个 30 天窗口要发 61 次 HTTP 请求。按默认参数，每晚约 183 到 190 次，而且只要这个场馆从未产出数据，就会每晚重复。
+      - run_log.requests 统计的是窗口数，上面这种情况只记 3。
+      - 每次运行没有总请求数或总时间的上限。
+      - rows_fetched 还包括后来失败并被丢弃的场馆的行，会让 reject_rate 失真。
+    解决方案：
+      - 在 opener 里计数，run_log 另外记录 http_requests。
+      - 每次运行设请求预算；记录已确认为空的日期段。
+      - 细分到 7 天就停，不再细分到单日。
+      - 连续 N 晚都"从无数据"的场馆，不再验证，等待人工处理。
+
+[M7] 一个格式异常的 200 响应会中止所有场馆的运行。
+    来源：R8、T14
+    位置：client.py:191-201、client.py:310-312
+    问题：
+      - 200 响应是 HTML 错误页（验证门户或 CDN 错误页）时，第一次就抛出 SchemaDriftError，不重试，整轮运行中止。
+      - JSON 里有超过 4300 位的整数时会抛 ValueError，嵌套过深时会抛 RecursionError。这两种都不是 ApiError，不会按场馆隔离，也会导致整轮运行失败，8 个场馆加载 0 行。
+    解决方案：
+      - 捕获 (UnicodeDecodeError, ValueError, RecursionError)。
+      - 无法解码的 200 当作传输错误重试，重试用尽后抛 ApiError，按场馆隔离。
+      - SchemaDriftError 只用于格式正确、但违反数据约定的 JSON。
+
+
+四、低严重度问题
+----------------
+
+[L1] CLI 的错误处理和可运维性。
+    来源：R10、T7
+    问题：
+      - 除了从未被抛出的 QualityGateFailed，其它错误都直接打印原始 traceback。涉及 ApiError、SchemaDriftError、参数 ValueError、OverflowError（例如 --backfill-days 10000000）、找不到 venues.csv（默认是相对路径）、duckdb 文件锁 IOException。
+      - 参数校验发生在数据库文件已经创建之后。
+      - resolve --db 拼错路径时会悄悄新建一个空库。
+      - 整个网络抓取阶段都持有 DuckDB 写锁，并发的 resolve 或 BI 读取会失败。
+      - 完全没有日志：重试、退避、细分这些过程都看不到。
+    解决方案：
+      - 用 argparse 的 type= 校验参数：正整数加上限（例如 3650），比例限定在 [0,1]。
+      - 顶层捕获已知异常，只输出一行错误，用不同的退出码区分。
+      - resolve 要求 --db 路径已存在。
+      - 先读 watermark，关闭连接，完成抓取后，只在 _load 的事务里重新打开连接。
+      - 改用 logging 模块：每个场馆和窗口记 INFO，每次重试记 WARNING。
+
+[L2] 传输错误的原因丢失，永久性故障要重试约 2 分钟才失败。
+    来源：R9、T8
+    位置：client.py:141-158、client.py:285
+    问题：
+      - DNS 失败、连接被拒、TLS 证书错误、代理 403 都统一变成 "last status 599"。
+      - 证书错误这类永久性故障也会退避重试。离线时 CLI 要 2 分 06 秒才失败。
+      - run_log.note 里每个失败会出现两次。
+    解决方案：
+      - 保留异常信息，例如 {"x-transport-error": "..."}，并写进 ApiError 的消息。
+      - 不重试 ssl.SSLCertVerificationError。
+      - 加熔断：前 2 个场馆都因传输错误失败时，中止其余场馆。
+      - 失败说明只写一次。
+
+[L3] --backfill-days 超过 180 天时被悄悄截断，状态仍是 "ok"。
+    来源：R7、T12
+    位置：ingest.py:410-414、679；__main__.py:39
+    证据：请求 365 天，只加载 180 天，note 显示 "gave up on 185 days"，状态 ok。
+    解决方案：在 _validate_params 里拒绝 backfill_days > max_lookback_days，或者把 --max-lookback-days 暴露为 CLI 参数。
+
+[L4] "所有场馆失败才算失败"的实际实现是"本轮没有任何场馆成功抓取"。
+    来源：V8
+    位置：ingest.py:415-416、455-456
+    问题：已是最新、本轮跳过的场馆不计入。7 个场馆已是最新、1 个返回 400 时，整轮运行被判为 failed。
+    解决方案：只在 len(failures) == len(venues) 时才抛异常，并在 __main__ 里捕获它。
+
+[L5] CI 和打包配置的依赖版本不一致。
+    来源：R13、V9、T9
+    问题：
+      - CI 执行 pip install -r requirements.txt ruff，ruff 没有锁版本。pyproject 要求 >=0.16,<0.17，uv.lock 锁定 0.16.6；ruff 0.17 一旦发布，无关的 PR 也可能变红。
+      - requirements.txt 没有上限（duckdb>=1.0、pytest>=8.0），与 pyproject 的 <2、<10 不一致。
+      - CI 从不安装这个包，所以 pyproject 的打包配置没有经过测试。
+      - uv.lock 没有被任何流程使用；dependabot 只配置了 pip 生态，不会更新 uv.lock。dependabot.yml:4 说是"pinned requirements"，实际并没有锁版本。
+      - uv sync 默认不安装 pytest 和 ruff。
+      - pyproject 缺少 license 和 authors 元数据。
+      - 没有覆盖率门槛，也没有定时运行的 live 冒烟测试。
+      - 没有 [project.scripts] 命令行入口。
+    解决方案：
+      - CI 改用 pip install -e ".[dev]"，或 uv sync --locked --extra dev 加 uv run。
+      - 删除 requirements.txt，或者从锁文件生成。
+      - dependabot 增加 package-ecosystem: uv。
+      - 加上 pytest --cov=nz_attraction_pageviews --cov-fail-under=90。
+      - 每周定时跑一次 RUN_LIVE=1 pytest -m live。
+      - 补上 license = "MIT"、authors 和 console 入口。
+
+[L6] User-Agent 写死了作者的个人邮箱。
+    来源：R14、V11
+    位置：client.py:37-40
+    问题：
+      - 当前格式符合 Wikimedia 的 UA 政策。
+      - 但只能通过修改源码来改；如果不是可编辑安装，就得去改 site-packages。直接运行的其他人会以作者的名义发出请求。
+      - 版本号 0.1 也是写死的。
+    解决方案：
+      - 从环境变量（例如 NZAP_USER_AGENT）或 --contact / --user-agent 参数读取。
+      - 在线运行时如果没有提供联系方式就拒绝运行。
+      - 版本号从 __version__ 生成。
+
+[L7] 超时只针对单次读取，不是整个请求。
+    来源：T13
+    位置：client.py:110、124（timeout=30）
+    问题：服务器慢慢挤出字节时，一个请求可以无限期拖下去。实测：超时调成 1 秒，每 0.25 秒发 1 字节，单个请求耗时 44.8 秒并且成功了。
+    解决方案：_read_bounded 按 64KB 分块读取，用 time.monotonic() 设总截止时间（例如 60 秒），超时抛 TimeoutError，它已经会按可重试的传输错误处理。
+
+[L8] 输入没有做规范化和清洗。
+    来源：R15、T11、T-S2
+    问题：
+      - 标题里写空格（例如 "Sky Tower (Auckland)"）或首字母小写时，不会转成 MediaWiki 格式。结果要么每晚 404、触发 M6 的请求膨胀，要么每一行都被 article_matches_request 拒收。
+      - venues.csv 末尾有一个全空行（",,,"，Excel 导出常见）时，整个 ingest 中止。
+    解决方案：
+      - 在 read_venues 和 _same_title 里执行 t.strip().replace(" ", "_")，并把首字母大写。
+      - 拒绝 #<>[]{}| 这些字符。
+      - 全空行直接跳过：if not any(fields.values()): continue
+
+[L9] 同一天出现两个冲突值时，第一个被当作干净数据加载。
+    来源：R16
+    位置：quality.py:112-114、203-204
+    问题：可能错误的数值进入 pageviews 表，只有第二个值被隔离。
+    解决方案：分两遍处理，同一天有重复时把所有行都隔离。
+
+[L10] 测试的缺口和脆弱点。
+    来源：T10、T15、V10、R13
+    问题：
+      - CLI 的 ingest 路径没有测试，__main__ 覆盖率 59%。
+      - resolve null 分支和空白注释的检查没有测试。
+      - fixtures/live 里的文件没有任何测试读取。
+      - tests/test_venue_failures.py:2 从 test_ingest 导入，依赖 pytest 默认的 prepend 导入模式。用 --import-mode=importlib 时收集会报错。
+      - scripts/capture_live.py 和 tests/test_live.py 用本地时区的 date.today()，流水线用的是 UTC。capture_live.py 默认会覆盖已提交的 fixtures。
+    解决方案：
+      - 补离线的 CLI 测试：用 monkeypatch 替换 urllib.request.urlopen，调用 main([...])，断言输出和退出码，分别覆盖 ok、degraded、drift 和网络不通四种情况。
+      - 补 resolve null 的测试。
+      - 加一个契约测试，把两个 fixture 分别过一遍 _parse 和 check_window。
+      - 把共享的辅助函数移到 tests/conftest.py 或 tests/helpers.py。
+      - 脚本统一使用 UTC 日期，输出目录做成可配置。
+
+[L11] 可维护性。
+    来源：R12
+    问题：
+      - ingest.py 有 1030 行，混合了 SQL 和表结构、watermark 计算、状态策略、流程编排和 resolve。
+      - stalled 和 silent 两个参数既被原地修改，又被作为返回值返回。
+      - 'accepted' 在 SQL 里写死（ingest.py:870），同时又定义了常量 ACCEPTED（883）。
+    解决方案：
+      - 拆成 store.py（表结构和查询）、watermark.py（纯函数）和一个纯函数 status(...)，方便单元测试。
+      - 统一使用 ACCEPTED 常量。
+
+
+五、建议修复顺序
+----------------
+
+1. H1 和 M1：状态定义（何时算 ok / degraded）以及 blocked 的计算。两者改的是同一段代码（ingest.py:762-785），应该一起改，并更新那三个断言 "ok" 的测试。
+2. H3：NULL 日期拒收行导致的 watermark 冻结，以及 --accept null。
+3. H2：直连 200 中间有空洞时的补请求。
+4. M2：resolve 流程。
+5. M7 和 L2：错误分类与重试策略。
+6. M3：在线确认 Te_Papa 标题，必要时重新回填。
+7. M4 和 M5：删除死代码，修正文档和 AI 使用说明。
+8. M6、L1、L3 至 L11：按需处理。L5 的 CI 依赖版本问题改动量很小，可以尽早做。
