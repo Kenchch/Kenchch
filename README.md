@@ -34,3 +34,5 @@ Archived, kept because they still reproduce rather than because they are current
 [![R CI](https://github.com/Kenchch/online-retail-analysis-r/actions/workflows/ci.yml/badge.svg)](https://github.com/Kenchch/online-retail-analysis-r/actions/workflows/ci.yml)
 [![Reproduce analysis](https://github.com/Kenchch/nz-sheep-decline-by-region/actions/workflows/reproduce.yml/badge.svg)](https://github.com/Kenchch/nz-sheep-decline-by-region/actions/workflows/reproduce.yml)
 [![BESS CI](https://github.com/Kenchch/nz-bess-peak-credit/actions/workflows/ci.yml/badge.svg)](https://github.com/Kenchch/nz-bess-peak-credit/actions/workflows/ci.yml)
+[![ETS CI](https://github.com/Kenchch/nz-ets-forest-eligibility-screening/actions/workflows/ci.yml/badge.svg)](https://github.com/Kenchch/nz-ets-forest-eligibility-screening/actions/workflows/ci.yml)
+[![aerial CI](https://github.com/Kenchch/aerial-small-object-detection/actions/workflows/ci.yml/badge.svg)](https://github.com/Kenchch/aerial-small-object-detection/actions/workflows/ci.yml)
